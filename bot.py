@@ -1,190 +1,97 @@
-import os
-import threading
-import requests
 import discord
 from discord import app_commands
+import requests
 from bs4 import BeautifulSoup
-from flask import Flask
+import os
+from urllib.parse import urlparse
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
-QUESTLOG_SEARCH_URL = "https://questlog.gg/throne-and-liberty/en/db/search"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Questlog-Discord-Bot)"
-}
-
-# ============================================================
-# MINI SERVEUR WEB (OBLIGATOIRE POUR RENDER FREE)
-# ============================================================
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Questlog Item Bot is running"
-
-def run_web():
-    # Render expose automatiquement le port via la variable PORT
-    port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-# Lancement du serveur web dans un thread séparé
-threading.Thread(target=run_web, daemon=True).start()
-
-# ============================================================
-# CLIENT DISCORD
-# ============================================================
-
-class MyClient(discord.Client):
-    def __init__(self):
-        intents = discord.Intents.default()
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        # Synchronisation des slash commands
-        await self.tree.sync()
-
-client = MyClient()
-
-# ============================================================
-# SCRAPING QUESTLOG.GG
-# ============================================================
-
-def search_item(item_name):
-    search_url = "https://questlog.gg/api/search"
-
+# ==============================
+# Fonction qui scrape l'URL
+# ==============================
+def scrape_item_from_url(url):
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0"
     }
 
-    params = {
-        "query": item_name,
-        "game": "throne-and-liberty",
-        "lang": "en"
-    }
-
-    response = requests.get(search_url, headers=headers, params=params, timeout=10)
+    response = requests.get(url, headers=headers)
 
     if response.status_code != 200:
         return None
 
-    data = response.json()
+    soup = BeautifulSoup(response.text, "html.parser")
 
-    if "results" not in data:
-        return None
-
-    for result in data["results"]:
-        if result.get("type") == "item":
-            slug = result.get("slug")
-            if slug:
-                return f"https://questlog.gg/throne-and-liberty/en/db/item/{slug}"
-
-    return None
-
-def get_item_data(item_url: str) -> dict | None:
-    """
-    Récupère les informations principales d'un item Questlog.gg
-    """
-    try:
-        response = requests.get(
-            item_url,
-            headers=HEADERS,
-            timeout=10
-        )
-    except requests.RequestException:
-        return None
-
-    if response.status_code != 200:
-        return None
-
-    soup = BeautifulSoup(response.text, "lxml")
-
-    # Nom de l'item
+    # Nom
     title = soup.find("h1")
     if not title:
         return None
 
-    name = title.text.strip()
+    item_name = title.text.strip()
 
-    # Icône de l'item
-    icon_tag = soup.select_one("img[src*='/icons/']")
-    icon_url = icon_tag["src"] if icon_tag else None
+    # Image
+    image = soup.find("meta", property="og:image")
+    image_url = image["content"] if image else None
 
-    # Description (si disponible)
-    description_tag = soup.select_one("div.text-muted")
-    description = (
-        description_tag.text.strip()
-        if description_tag and description_tag.text.strip()
-        else "No description available."
-    )
+    # Description
+    description_tag = soup.find("meta", property="og:description")
+    description = description_tag["content"] if description_tag else "No description found."
 
     return {
-        "name": name,
-        "icon": icon_url,
-        "description": description,
-        "url": item_url
+        "name": item_name,
+        "image": image_url,
+        "description": description
     }
 
-# ============================================================
-# SLASH COMMAND /item
-# ============================================================
 
-@client.tree.command(
-    name="item",
-    description="Search an item from Questlog.gg (Throne and Liberty)"
-)
-@app_commands.describe(name="Name of the item to search")
-async def item(interaction: discord.Interaction, name: str):
+# ==============================
+# Commande /item
+# ==============================
+@tree.command(name="item", description="Get item info from a Questlog URL")
+@app_commands.describe(url="Full Questlog item URL")
+async def item(interaction: discord.Interaction, url: str):
 
-    # Discord impose une réponse rapide → on diffère
     await interaction.response.defer()
 
-    # 1) Recherche de l'item
-    item_url = search_item(name)
-
-    if not item_url:
-        await interaction.followup.send(
-            f"❌ No item found for **{name}**"
-        )
+    # Vérification URL valide
+    parsed = urlparse(url)
+    if "questlog.gg" not in parsed.netloc:
+        await interaction.followup.send("❌ Please provide a valid Questlog.gg URL.")
         return
 
-    # 2) Récupération des données de l'item
-    data = get_item_data(item_url)
+    data = scrape_item_from_url(url)
 
     if not data:
-        await interaction.followup.send(
-            "❌ Failed to retrieve item data."
-        )
+        await interaction.followup.send("❌ Could not retrieve item from this URL.")
         return
 
-    # 3) Création de l'embed Discord
     embed = discord.Embed(
         title=data["name"],
         description=data["description"],
-        url=data["url"],
-        color=0x2ECC71
+        url=url,
+        color=0x5865F2
     )
 
-    if data["icon"]:
-        embed.set_thumbnail(url=data["icon"])
+    if data["image"]:
+        embed.set_thumbnail(url=data["image"])
 
     embed.set_footer(text="Data from Questlog.gg")
 
-    # 4) Envoi de la réponse
     await interaction.followup.send(embed=embed)
 
-# ============================================================
-# LANCEMENT DU BOT
-# ============================================================
 
-if not DISCORD_TOKEN:
-    raise RuntimeError("DISCORD_TOKEN environment variable is not set")
+# ==============================
+# Bot Ready
+# ==============================
+@client.event
+async def on_ready():
+    await tree.sync()
+    print(f"Logged in as {client.user}")
 
-client.run(DISCORD_TOKEN)
+
+client.run(TOKEN)
