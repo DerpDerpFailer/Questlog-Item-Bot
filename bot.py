@@ -56,36 +56,37 @@ client = MyClient()
 # SCRAPING QUESTLOG.GG
 # ============================================================
 
-def search_item(item_name: str) -> str | None:
-    """
-    Recherche un item sur Questlog.gg via la page HTML de recherche.
-    Retourne l'URL du premier item trouvé ou None.
-    """
-    params = {"q": item_name}
+def search_item(item_name):
+    search_url = "https://questlog.gg/api/search"
 
-    try:
-        response = requests.get(
-            QUESTLOG_SEARCH_URL,
-            params=params,
-            headers=HEADERS,
-            timeout=10
-        )
-    except requests.RequestException:
-        return None
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+    }
+
+    params = {
+        "query": item_name,
+        "game": "throne-and-liberty",
+        "lang": "en"
+    }
+
+    response = requests.get(search_url, headers=headers, params=params, timeout=10)
 
     if response.status_code != 200:
         return None
 
-    soup = BeautifulSoup(response.text, "lxml")
+    data = response.json()
 
-    # Premier lien qui correspond à un item
-    link = soup.select_one("a[href*='/db/item/']")
-
-    if not link or "href" not in link.attrs:
+    if "results" not in data:
         return None
 
-    return "https://questlog.gg" + link["href"]
+    for result in data["results"]:
+        if result.get("type") == "item":
+            slug = result.get("slug")
+            if slug:
+                return f"https://questlog.gg/throne-and-liberty/en/db/item/{slug}"
 
+    return None
 
 def get_item_data(item_url: str) -> dict | None:
     """
