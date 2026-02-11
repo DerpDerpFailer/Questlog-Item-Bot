@@ -93,5 +93,21 @@ async def on_ready():
     await tree.sync()
     print(f"Logged in as {client.user}")
 
+# ==============================
+# Mini serveur pour Render
+# ==============================
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Questlog Item Bot is running!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# Lancer le serveur web dans un thread séparé
+Thread(target=run_web).start()
 
 client.run(TOKEN)
