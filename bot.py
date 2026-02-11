@@ -4,6 +4,8 @@ import requests
 from bs4 import BeautifulSoup
 import os
 from urllib.parse import urlparse
+from flask import Flask
+from threading import Thread
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
