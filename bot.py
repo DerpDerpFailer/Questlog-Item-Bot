@@ -35,41 +35,61 @@ def fetch_tldb_item(item_id):
 
     soup = BeautifulSoup(response.text, "lxml")
 
+    # =========================
     # ITEM NAME
+    # =========================
     title_tag = soup.find("h1")
     if not title_tag:
         return None
     item_name = clean_text(title_tag.text)
 
+    # =========================
+    # IMAGE
+    # =========================
+    image_url = None
+    img_tag = soup.find("img")
+    if img_tag and img_tag.get("src"):
+        image_url = img_tag["src"]
+        if image_url.startswith("/"):
+            image_url = "https://tldb.info" + image_url
+
+    # =========================
     # RARITY
+    # =========================
     rarity = "Unknown"
     rarity_block = soup.find(string=re.compile("Rarity"))
     if rarity_block:
-        parent = rarity_block.find_parent()
+        parent = rarity_block.find_parent("div")
         if parent:
-            rarity = clean_text(parent.text.replace("Rarity", ""))
+            rarity_text = parent.get_text(separator=" ").replace("Rarity", "")
+            rarity = clean_text(rarity_text)
 
+    # =========================
     # DESCRIPTION
+    # =========================
     description = ""
     desc_block = soup.find("h2", class_="item-description")
     if desc_block:
         description = clean_text(desc_block.text)
 
-    # MAIN STATS (Damage, Speed, Range etc.)
+    # =========================
+    # BASE STATS (ONLY FIRST BLOCK)
+    # =========================
     stats = []
 
-    stat_containers = soup.find_all("div", class_=re.compile("stats-container"))
-
-    for container in stat_containers:
-        names = container.find_all("span", class_=re.compile("stat-name"))
+    stat_container = soup.find("div", class_=re.compile("stats-container"))
+    if stat_container:
+        names = stat_container.find_all("span", class_=re.compile("stat-name"))
         for name_tag in names:
             value_tag = name_tag.find_next("span", class_=re.compile("stat-value"))
             if value_tag:
                 name = clean_text(name_tag.text.replace(":", ""))
                 value = clean_text(value_tag.text)
-                stats.append(f"• **{name}**: {value}")
+                stats.append(f"• {name}: {value}")
 
+    # =========================
     # UNIQUE SKILL
+    # =========================
     skill_name = ""
     skill_desc = ""
 
@@ -77,17 +97,9 @@ def fetch_tldb_item(item_id):
     if skill_title:
         skill_name = clean_text(skill_title.text)
 
-        skill_description = skill_title.find_next("span", class_=re.compile("unique-skill-description"))
+        skill_description = soup.find("span", class_=re.compile("unique-skill-description"))
         if skill_description:
             skill_desc = clean_text(skill_description.text)
-
-    # SALE PRICE
-    sale_price = ""
-    sale_block = soup.find(string=re.compile("Sale Price"))
-    if sale_block:
-        parent = sale_block.find_parent()
-        if parent:
-            sale_price = clean_text(parent.text.replace("Sale Price:", ""))
 
     return {
         "name": item_name,
@@ -96,12 +108,12 @@ def fetch_tldb_item(item_id):
         "stats": stats,
         "skill_name": skill_name,
         "skill_desc": skill_desc,
-        "sale_price": sale_price,
-        "url": url
+        "url": url,
+        "image": image_url
     }
 
 @tree.command(name="item", description="Get TLDB item by ID")
-@app_commands.describe(item_id="Example: sword2h_aa_t2_raid_001")
+@app_commands.describe(item_id="Example: spear2h_aa_t2_raid_001")
 async def item(interaction: discord.Interaction, item_id: str):
     await interaction.response.defer()
 
@@ -114,8 +126,11 @@ async def item(interaction: discord.Interaction, item_id: str):
     embed = discord.Embed(
         title=data["name"],
         url=data["url"],
-        color=discord.Color.purple()
+        color=discord.Color.blurple()
     )
+
+    if data["image"]:
+        embed.set_thumbnail(url=data["image"])
 
     embed.add_field(name="Rarity", value=data["rarity"], inline=True)
 
@@ -123,18 +138,18 @@ async def item(interaction: discord.Interaction, item_id: str):
         embed.add_field(name="Description", value=data["description"], inline=False)
 
     if data["stats"]:
-        stats_text = "\n".join(data["stats"][:15])  # limit to avoid embed overflow
-        embed.add_field(name="Stats", value=stats_text, inline=False)
-
-    if data["skill_name"]:
         embed.add_field(
-            name=f"Unique Skill — {data['skill_name']}",
-            value=data["skill_desc"] if data["skill_desc"] else "No description",
+            name="⚔ Base Stats",
+            value="\n".join(data["stats"]),
             inline=False
         )
 
-    if data["sale_price"]:
-        embed.add_field(name="Sale Price", value=data["sale_price"], inline=True)
+    if data["skill_name"]:
+        embed.add_field(
+            name=f"✨ Unique Skill — {data['skill_name']}",
+            value=data["skill_desc"] if data["skill_desc"] else "No description",
+            inline=False
+        )
 
     embed.set_footer(text="Data from TLDB.info")
 
@@ -142,7 +157,12 @@ async def item(interaction: discord.Interaction, item_id: str):
 
 @client.event
 async def on_ready():
-    await tree.sync()
+    try:
+        synced = await tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(e)
+
     print(f"Logged in as {client.user}")
 
 if __name__ == "__main__":
