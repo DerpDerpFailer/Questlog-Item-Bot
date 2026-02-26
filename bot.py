@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
 import discord
@@ -15,6 +16,30 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
+
+# ==============================
+# UTILS
+# ==============================
+
+def clean_html(raw_html):
+    soup = BeautifulSoup(raw_html, "lxml")
+    return soup.get_text("\n", strip=True)
+
+def detect_rarity(soup):
+    page_text = soup.get_text().lower()
+
+    if "heroic" in page_text:
+        return "Heroic", 0x9B59B6  # Purple
+    elif "epic" in page_text:
+        return "Epic", 0xE91E63
+    elif "rare" in page_text:
+        return "Rare", 0x3498DB
+    elif "uncommon" in page_text:
+        return "Uncommon", 0x2ECC71
+    elif "common" in page_text:
+        return "Common", 0x95A5A6
+
+    return "Unknown", 0x5865F2
 
 # ==============================
 # TLDB SCRAPER
@@ -34,9 +59,7 @@ def fetch_tldb_item(url: str):
 
     soup = BeautifulSoup(response.text, "lxml")
 
-    # ======================
-    # Item Name (REAL NAME)
-    # ======================
+    # Item name
     title_tag = soup.find("h1")
     if not title_tag:
         print("No <h1> found.")
@@ -44,31 +67,37 @@ def fetch_tldb_item(url: str):
 
     item_name = title_tag.text.strip()
 
-    # ======================
-    # Item Image
-    # ======================
+    # Image
     image_tag = soup.find("meta", property="og:image")
     image_url = image_tag["content"] if image_tag else None
 
-    # ======================
-    # Description (optional)
-    # ======================
+    # Full tooltip block (more reliable than description div)
+    tooltip_block = soup.find("div", class_=re.compile("tooltip", re.I))
+
     description = ""
+    stats = ""
 
-    desc_block = soup.find("div", class_="description")
-    if desc_block:
-        description = desc_block.text.strip()
+    if tooltip_block:
+        text = clean_html(str(tooltip_block))
 
-    # fallback if no description div
-    if not description:
-        meta_desc = soup.find("meta", property="og:description")
-        if meta_desc:
-            description = meta_desc["content"]
+        # Split stats if present
+        if "Stats:" in text:
+            parts = text.split("Stats:")
+            description = parts[0].strip()
+            stats = parts[1].strip()
+        else:
+            description = text.strip()
+
+    # Detect rarity
+    rarity, color = detect_rarity(soup)
 
     return {
         "name": item_name,
         "image": image_url,
         "description": description,
+        "stats": stats,
+        "rarity": rarity,
+        "color": color,
         "url": url
     }
 
@@ -95,12 +124,25 @@ async def item(interaction: discord.Interaction, url: str):
     embed = discord.Embed(
         title=data["name"],
         url=data["url"],
-        description=data["description"] or "No description available.",
-        color=0x5865F2
+        description=data["description"][:4000],
+        color=data["color"]
     )
 
     if data["image"]:
         embed.set_thumbnail(url=data["image"])
+
+    embed.add_field(
+        name="Rarity",
+        value=data["rarity"],
+        inline=True
+    )
+
+    if data["stats"]:
+        embed.add_field(
+            name="Stats",
+            value=data["stats"][:1000],
+            inline=False
+        )
 
     embed.set_footer(text="Data from TLDB.info")
 
