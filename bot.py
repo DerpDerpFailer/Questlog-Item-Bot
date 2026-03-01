@@ -35,61 +35,72 @@ def fetch_tldb_item(item_id):
 
     soup = BeautifulSoup(response.text, "lxml")
 
-    # =========================
-    # ITEM NAME
-    # =========================
-    title_tag = soup.find("h1")
-    if not title_tag:
+    # ======================
+    # NAME
+    # ======================
+    name_tag = soup.find("h1")
+    if not name_tag:
         return None
-    item_name = clean_text(title_tag.text)
+    item_name = clean_text(name_tag.text)
 
-    # =========================
-    # IMAGE
-    # =========================
+    # ======================
+    # ICON
+    # ======================
     image_url = None
-    img_tag = soup.find("img")
-    if img_tag and img_tag.get("src"):
-        image_url = img_tag["src"]
-        if image_url.startswith("/"):
-            image_url = "https://tldb.info" + image_url
+    header = soup.find("div", class_=re.compile("item-header"))
+    if header:
+        img = header.find("img")
+        if img and img.get("src"):
+            image_url = img["src"]
 
-    # =========================
+    # ======================
     # RARITY
-    # =========================
+    # ======================
     rarity = "Unknown"
-    rarity_block = soup.find(string=re.compile("Rarity"))
-    if rarity_block:
-        parent = rarity_block.find_parent("div")
-        if parent:
-            rarity_text = parent.get_text(separator=" ").replace("Rarity", "")
-            rarity = clean_text(rarity_text)
+    rarity_tag = soup.find("span", class_=re.compile("item-header-rarity-name"))
+    if rarity_tag:
+        rarity = clean_text(rarity_tag.text)
 
-    # =========================
+    # ======================
     # DESCRIPTION
-    # =========================
+    # ======================
     description = ""
-    desc_block = soup.find("h2", class_="item-description")
-    if desc_block:
-        description = clean_text(desc_block.text)
+    desc_tag = soup.find("h2", class_="item-description")
+    if desc_tag:
+        description = clean_text(desc_tag.text)
 
-    # =========================
-    # BASE STATS (ONLY FIRST BLOCK)
-    # =========================
+    # ======================
+    # BASE STATS (STOP AT POSSIBLE TRAITS)
+    # ======================
     stats = []
 
-    stat_container = soup.find("div", class_=re.compile("stats-container"))
-    if stat_container:
-        names = stat_container.find_all("span", class_=re.compile("stat-name"))
-        for name_tag in names:
-            value_tag = name_tag.find_next("span", class_=re.compile("stat-value"))
-            if value_tag:
-                name = clean_text(name_tag.text.replace(":", ""))
-                value = clean_text(value_tag.text)
-                stats.append(f"• {name}: {value}")
+    stats_containers = soup.find_all("div", class_=re.compile("stats-container"))
 
-    # =========================
+    stop_parsing = False
+
+    for container in stats_containers:
+        if stop_parsing:
+            break
+
+        stat_blocks = container.find_all("span", class_=re.compile("stat-name"))
+
+        for stat_name_tag in stat_blocks:
+            stat_name = clean_text(stat_name_tag.text.replace(":", ""))
+
+            # STOP condition
+            if "Possible Traits" in stat_name:
+                stop_parsing = True
+                break
+
+            # Find corresponding value
+            value_tag = stat_name_tag.find_next("span", class_=re.compile("stat-value"))
+            if value_tag:
+                stat_value = clean_text(value_tag.text)
+                stats.append(f"• {stat_name}: {stat_value}")
+
+    # ======================
     # UNIQUE SKILL
-    # =========================
+    # ======================
     skill_name = ""
     skill_desc = ""
 
@@ -113,7 +124,7 @@ def fetch_tldb_item(item_id):
     }
 
 @tree.command(name="item", description="Get TLDB item by ID")
-@app_commands.describe(item_id="Example: spear2h_aa_t2_raid_001")
+@app_commands.describe(item_id="Example: sword2h_aa_t2_raid_001")
 async def item(interaction: discord.Interaction, item_id: str):
     await interaction.response.defer()
 
