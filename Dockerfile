@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Install Node.js (needed for fetch_items.mjs)
+# Install Node.js
 RUN apt-get update && apt-get install -y curl && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
@@ -19,6 +19,7 @@ RUN npm install
 # Copy source files
 COPY . /app
 
-RUN chmod +x /app/entrypoint.sh
+# Écrire l'entrypoint directement — évite tout problème de CRLF ou permissions
+RUN printf '#!/bin/sh\nset -e\necho "=== [1/2] Refreshing TLDB item list ==="\nnode /app/fetch_items.mjs\necho "=== [2/2] Starting Discord bot ==="\nexec python /app/bot.py\n' > /app/entrypoint.sh
 
-CMD ["/app/entrypoint.sh"]
+CMD ["/bin/sh", "/app/entrypoint.sh"]
