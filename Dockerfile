@@ -1,10 +1,14 @@
-FROM python:3.11-slim
+# Dockerfile
+FROM python:3.12-slim
 
+# Set working directory
 WORKDIR /app
 
-COPY requirements.txt .
+# Copier le code
+COPY . /app
+
+# Installer les dépendances
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py .
-
+# Lancer le bot
 CMD ["python", "bot.py"]
