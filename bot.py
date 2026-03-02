@@ -4,8 +4,6 @@ import requests
 from bs4 import BeautifulSoup
 import discord
 from discord import app_commands
-from flask import Flask
-import threading
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -13,17 +11,10 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot is running"
-
-def run_web():
-    app.run(host="0.0.0.0", port=10000)
 
 def clean_text(text):
     return re.sub(r'\s+', ' ', text).strip()
+
 
 def fetch_tldb_item(item_id):
     url = f"https://tldb.info/db/item/{item_id}"
@@ -73,9 +64,7 @@ def fetch_tldb_item(item_id):
     # BASE STATS (STOP AT POSSIBLE TRAITS)
     # ======================
     stats = []
-
     stats_containers = soup.find_all("div", class_=re.compile("stats-container"))
-
     stop_parsing = False
 
     for container in stats_containers:
@@ -123,6 +112,7 @@ def fetch_tldb_item(item_id):
         "image": image_url
     }
 
+
 @tree.command(name="item", description="Get TLDB item by ID")
 @app_commands.describe(item_id="Example: sword2h_aa_t2_raid_001")
 async def item(interaction: discord.Interaction, item_id: str):
@@ -166,6 +156,7 @@ async def item(interaction: discord.Interaction, item_id: str):
 
     await interaction.followup.send(embed=embed)
 
+
 @client.event
 async def on_ready():
     try:
@@ -176,6 +167,6 @@ async def on_ready():
 
     print(f"Logged in as {client.user}")
 
+
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
     client.run(TOKEN)
