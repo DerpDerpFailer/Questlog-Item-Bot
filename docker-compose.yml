@@ -6,4 +6,6 @@ services:
     container_name: tldb-bot
     restart: unless-stopped
     environment:
-      - DISCORD_TOKEN
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+    volumes:
+      - ./data:/app/data
