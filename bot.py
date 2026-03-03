@@ -116,7 +116,7 @@ def build_embed(data: dict, item_id: str) -> discord.Embed:
     # Icon
     icon_path = data.get("icon", "")
     if icon_path:
-        icon_url = ICON_BASE_URL + icon_path.replace("Image/", "") + ".png"
+        icon_url = ICON_BASE_URL + icon_path.replace("Image/", "").lower() + ".png"
         embed.set_thumbnail(url=icon_url)
 
     # Base Stats (Damage, Attack Speed, Range…)
