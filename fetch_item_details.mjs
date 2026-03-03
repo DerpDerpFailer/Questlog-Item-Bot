@@ -84,10 +84,9 @@ function formatValue(value, format, multiply) {
 }
 
 function computeStatAtLevel(stat, level) {
-  const bonuses = (stat.enchant_values ?? [])
-    .slice(0, level)
-    .reduce((a, b) => a + b, 0);
-  return stat.value + bonuses;
+  if (level === 0) return stat.value;
+  const bonus = stat.enchant_values?.[level - 1] ?? 0;
+  return stat.value + bonus;
 }
 
 function parseStatGroup(statList) {
