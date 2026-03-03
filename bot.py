@@ -119,22 +119,12 @@ def build_embed(data: dict, item_id: str) -> discord.Embed:
         icon_url = ICON_BASE_URL + icon_path.replace("Image/", "").lower() + ".png"
         embed.set_thumbnail(url=icon_url)
 
-    # Base Stats (Damage, Attack Speed, Range…)
+    # Base Stats
     main_stats = data.get("main_stats", [])
     if main_stats:
-        # Group Damage min/max on one line, rest separately
-        damage_parts = [s for s in main_stats if "damage" in s["key"].lower()]
-        other_main = [s for s in main_stats if "damage" not in s["key"].lower()]
-
-        lines = []
-        if damage_parts:
-            vals = [s["value"] for s in damage_parts]
-            lines.append(f"Damage: {' ~ '.join(vals)}")
-        for s in other_main:
-            lines.append(fmt(s))
-
+        lines = [f"{s['name']}: {s['value']}" for s in main_stats]
         embed.add_field(
-            name=f"⚔️ Base Stats (+12)",
+            name="⚔️ Base Stats (+12)",
             value="\n".join(lines),
             inline=False
         )
