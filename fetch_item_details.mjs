@@ -113,19 +113,20 @@ function buildMainStats(statList) {
 
   for (const [mainKey, bonusKey, label] of damagePairs) {
     if (statMap[mainKey] !== undefined) {
-      const min = statMap[mainKey];
-      const max = statMap[bonusKey] !== undefined
-        ? statMap[mainKey] + statMap[bonusKey]
-        : null;
+      const attackPower = statMap[mainKey];
+      const bonus = statMap[bonusKey] ?? 0;
+
+      const min = bonus + 1;
+      const max = attackPower + bonus;
 
       const stat = statList.find(s => s.key === mainKey);
       const minFmt = formatValue(min, stat.format, stat.multiply);
-      const maxFmt = max !== null ? formatValue(max, stat.format, stat.multiply) : null;
+      const maxFmt = formatValue(max, stat.format, stat.multiply);
 
       results.push({
         key: mainKey,
         name: label,
-        value: maxFmt ? `${minFmt} ~ ${maxFmt}` : minFmt,
+        value: `${minFmt} ~ ${maxFmt}`,
       });
       handled.add(mainKey);
       handled.add(bonusKey);
