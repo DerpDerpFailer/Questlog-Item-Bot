@@ -76,6 +76,8 @@ try {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+const ENCHANT_LEVEL = 12;
+
 function formatValue(value, format, multiply) {
   const computed = value * (multiply ?? 1);
   const rounded = Math.round(computed * 100) / 100;
