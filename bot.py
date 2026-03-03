@@ -165,7 +165,6 @@ def build_embed(data: dict, item_id: str) -> discord.Embed:
         desc_clean = re.sub(r"<[^>]+>", "", raw_desc)
         embed.add_field(name="📖 Description", value=desc_clean, inline=False)
 
-    embed.set_footer(text="Data from TLDB.info · Stats shown at +12")
     return embed
 
 
