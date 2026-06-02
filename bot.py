@@ -7,7 +7,7 @@ from discord import app_commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
-ICON_BASE = "https://questlog.gg"
+ICON_BASE = "https://cdn.questlog.gg/throne-and-liberty"
 
 # Grade → rarity label + color
 GRADE_CONFIG = {
