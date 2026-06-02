@@ -94,11 +94,10 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         color=color
     )
 
-    # Icon
+    # Icon — format: "/assets/.../IT_P_Orb_00014.IT_P_Orb_00014"
     icon_path = item.get("icon", "")
     if icon_path:
-        icon_clean = icon_path.split(".")[0] + ".png"
-        embed.set_thumbnail(url=ICON_BASE + icon_clean)
+        embed.set_thumbnail(url=ICON_BASE + icon_path)
 
     stats = item.get("itemStats", {})
     lvl = "12"
