@@ -1,0 +1,9 @@
+version: "3.9"
+
+services:
+  questlog-bot:
+    build: .
+    container_name: questlog-bot
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
