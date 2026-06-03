@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 import requests
 import discord
@@ -7,7 +8,9 @@ from discord import app_commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
-ICON_BASE = "https://questlog.gg"
+
+API_TIMEOUT = 8          # secondes avant timeout questlog
+STAT_FORMAT_TTL = 86400  # 24h en secondes
 
 # Grade → rarity label + color
 GRADE_CONFIG = {
@@ -17,39 +20,47 @@ GRADE_CONFIG = {
     43: ("💎", "Epic III", 0x4A148C),
 }
 
-# Stat formats loaded from API at startup
+# Stat formats cache
 _stat_formats: dict = {}
+_stat_formats_loaded_at: float = 0.0
 
 
 def load_stat_formats() -> None:
-    global _stat_formats
+    global _stat_formats, _stat_formats_loaded_at
     import json
     try:
         r = requests.get(
             f"{BASE_URL}/statFormat.getStatFormat",
             params={"input": json.dumps({"language": "en"}, separators=(",", ":"))},
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
+            timeout=API_TIMEOUT
         )
         r.raise_for_status()
         _stat_formats = r.json()["result"]["data"]
+        _stat_formats_loaded_at = time.time()
         print(f"Loaded {len(_stat_formats)} stat formats")
     except Exception as e:
         print(f"Warning: could not load stat formats: {e}")
 
 
+def get_stat_formats() -> dict:
+    """Return stat formats, reloading if older than 24h."""
+    if time.time() - _stat_formats_loaded_at > STAT_FORMAT_TTL:
+        load_stat_formats()
+    return _stat_formats
+
+
 def format_stat(key: str, value: float) -> str:
-    """Format a stat value using the API mapping."""
-    fmt = _stat_formats.get(key)
+    fmt = get_stat_formats().get(key)
     if not fmt:
         return f"{key}: {value}"
     name = fmt.get("name", key)
     multiplier = fmt.get("multiplier", 1)
     value_format = fmt.get("valueFormat", "{0}")
     computed = round(value * multiplier, 2)
-    # Remove trailing .0 for clean display
     computed_str = str(int(computed)) if computed == int(computed) else str(computed)
     return f"{name}: {value_format.replace('{0}', computed_str)}"
+
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -64,10 +75,13 @@ def api_get(endpoint: str, input_data: dict) -> dict | None:
             f"{BASE_URL}/{endpoint}",
             params={"input": json.dumps(input_data, separators=(",", ":"))},
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
+            timeout=API_TIMEOUT
         )
         r.raise_for_status()
         return r.json()["result"]["data"]
+    except requests.exceptions.Timeout:
+        print(f"API timeout [{endpoint}]")
+        return "timeout"
     except Exception as e:
         print(f"API error [{endpoint}]: {e}")
         return None
@@ -75,13 +89,10 @@ def api_get(endpoint: str, input_data: dict) -> dict | None:
 
 def search_items(query: str) -> list[dict]:
     data = api_get("database.getItems", {
-        "language": "en",
-        "page": 1,
-        "searchTerm": query,
-        "mainCategory": "",
-        "subCategory": ""
+        "language": "en", "page": 1,
+        "searchTerm": query, "mainCategory": "", "subCategory": ""
     })
-    if not data:
+    if not data or data == "timeout":
         return []
     return [
         {"id": item["id"], "name": item["name"]}
@@ -90,16 +101,14 @@ def search_items(query: str) -> list[dict]:
     ][:25]
 
 
-def fetch_item(item_id: str) -> dict | None:
+def fetch_item(item_id: str) -> dict | str | None:
     return api_get("database.getItem", {"id": item_id, "language": "en"})
 
 
-def fetch_ah_price(item_id: str) -> dict | None:
+def fetch_ah_price(item_id: str) -> dict | str | None:
     return api_get("auctionHouse.getAuctionItem", {
-        "language": "en",
-        "regionId": "eu-f",
-        "itemId": item_id,
-        "timespan": 360
+        "language": "en", "regionId": "eu-f",
+        "itemId": item_id, "timespan": 360
     })
 
 
@@ -113,9 +122,11 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     url = f"https://questlog.gg/throne-and-liberty/en/db/item/{item_id}"
 
     # AH price
-    if ah and ah.get("inStock", 0) > 0:
+    if ah and ah != "timeout" and ah.get("inStock", 0) > 0:
         price_fmt = f"{ah['minPrice']:,}".replace(",", " ")
         ah_str = f"  ·  🏪 **{price_fmt} ◈** ×{ah['inStock']}"
+    elif ah == "timeout":
+        ah_str = "  ·  🏪 *Unavailable*"
     elif ah is not None:
         ah_str = "  ·  🏪 *Not listed*"
     else:
@@ -128,13 +139,11 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         color=color
     )
 
-    # Icon — l'API retourne "/.../IT_P_Orb_00014.IT_P_Orb_00014", on retire le suffixe dupliqué
+    # Icon
     icon_path = item.get("icon", "")
     if icon_path:
         icon_clean = icon_path.rsplit(".", 1)[0]
         embed.set_thumbnail(url=f"https://cdn.questlog.gg/throne-and-liberty{icon_clean}.webp")
-
-    print(f"Item requested: {item.get('name', 'Unknown')} ({item.get('id', '?')})")
 
     stats = item.get("itemStats") or {}
     lvl = "12"
@@ -142,16 +151,13 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     # ── Base Stats ────────────────────────────────────────────────────────────
     main = (stats.get("main") or {}).get(lvl, {})
     stat_lines = []
-
     mainhand = main.get("mainhand")
     offhand = main.get("offhand")
-
     if mainhand:
         stat_lines.append(f"Damage: {mainhand['min']} ~ {mainhand['max']}")
     if offhand:
         stat_lines.append(f"Off-Hand: {offhand['min']} ~ {offhand['max']}")
-
-    extra_main = main.get("extra", {})
+    extra_main = main.get("extra") or {}
     if extra_main.get("attack_speed_main_hand"):
         spd = round(extra_main["attack_speed_main_hand"] * 0.001, 3)
         stat_lines.append(f"Attack Speed: {spd}s")
@@ -160,13 +166,8 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         stat_lines.append(f"Range: {rng}m")
     if extra_main.get("armor"):
         stat_lines.append(f"Armor: {extra_main['armor']}")
-
     if stat_lines:
-        embed.add_field(
-            name="⚔️ Base Stats (+12)",
-            value=" │ ".join(stat_lines),
-            inline=False
-        )
+        embed.add_field(name="⚔️ Base Stats (+12)", value=" │ ".join(stat_lines), inline=False)
 
     # ── Unique Skill ──────────────────────────────────────────────────────────
     passive = item.get("passives")
@@ -176,19 +177,17 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
 
     # ── Extra Stats ───────────────────────────────────────────────────────────
     extra = (stats.get("extra") or {}).get(lvl, {})
-    extra_parts = []
-    for key, val in extra.items():
-        extra_parts.append(format_stat(key, val))
-
+    extra_parts = [format_stat(k, v) for k, v in extra.items()]
     if extra_parts:
         embed.add_field(name="📊 Stats (+12)", value=" │ ".join(extra_parts), inline=False)
 
     # ── Traits ────────────────────────────────────────────────────────────────
-    traits = (stats.get("traits") or {})
+    traits = stats.get("traits") or {}
     if traits:
+        stat_fmts = get_stat_formats()
         trait_lines = []
         for key, values in traits.items():
-            fmt = _stat_formats.get(key)
+            fmt = stat_fmts.get(key)
             name = fmt["name"] if fmt else key
             multiplier = fmt["multiplier"] if fmt else 1
             value_format = fmt["valueFormat"] if fmt else "{0}"
@@ -198,11 +197,7 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
                 computed_str = str(int(computed)) if computed == int(computed) else str(computed)
                 formatted_values.append(value_format.replace("{0}", computed_str))
             trait_lines.append(f"**{name}**: {' | '.join(formatted_values)}")
-        embed.add_field(
-            name="🎲 Possible Traits",
-            value="\n".join(trait_lines),
-            inline=False
-        )
+        embed.add_field(name="🎲 Possible Traits", value="\n".join(trait_lines), inline=False)
 
     # ── Description ───────────────────────────────────────────────────────────
     raw_desc = item.get("description", "")
@@ -219,6 +214,7 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
 @tree.command(name="item", description="Search a Throne & Liberty item")
 @app_commands.describe(item_name="Start typing the item name...")
 async def item_command(interaction: discord.Interaction, item_name: str):
+    user = f"{interaction.user.name} ({interaction.user.id})"
     await interaction.response.defer()
 
     loop = asyncio.get_event_loop()
@@ -227,13 +223,21 @@ async def item_command(interaction: discord.Interaction, item_name: str):
         loop.run_in_executor(None, fetch_ah_price, item_name),
     )
 
+    # Timeout sur l'item (bloquant)
+    if item == "timeout":
+        print(f"[TIMEOUT] {user} requested '{item_name}'")
+        await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.")
+        return
+
     if not item:
+        print(f"[NOT FOUND] {user} requested '{item_name}'")
         await interaction.followup.send(
             f"❌ Item not found: `{item_name}`\n"
             "💡 Use autocomplete to select an item from the list."
         )
         return
 
+    print(f"[OK] {user} → {item.get('name')} ({item.get('id')})")
     embed = build_embed(item, ah)
     await interaction.followup.send(embed=embed)
 
