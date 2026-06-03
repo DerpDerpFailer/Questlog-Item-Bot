@@ -140,7 +140,7 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     lvl = "12"
 
     # ── Base Stats ────────────────────────────────────────────────────────────
-    main = stats.get("main", {}).get(lvl, {})
+    main = (stats.get("main") or {}).get(lvl, {})
     stat_lines = []
 
     mainhand = main.get("mainhand")
@@ -175,7 +175,7 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         embed.add_field(name=f"✨ {passive['name']}", value=desc or "No description", inline=False)
 
     # ── Extra Stats ───────────────────────────────────────────────────────────
-    extra = stats.get("extra", {}).get(lvl, {})
+    extra = (stats.get("extra") or {}).get(lvl, {})
     extra_parts = []
     for key, val in extra.items():
         extra_parts.append(format_stat(key, val))
