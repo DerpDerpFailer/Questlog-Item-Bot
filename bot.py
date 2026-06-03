@@ -136,7 +136,7 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         print(f"DEBUG icon_url: {icon_url}")
         embed.set_thumbnail(url=icon_url)
 
-    stats = item.get("itemStats", {})
+    stats = item.get("itemStats") or {}
     lvl = "12"
 
     # ── Base Stats ────────────────────────────────────────────────────────────
