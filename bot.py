@@ -211,8 +211,6 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         if clean:
             embed.add_field(name="📖 Description", value=clean, inline=False)
 
-    embed.set_footer(text="Data from questlog.gg", icon_url="https://questlog.gg/favicon.ico")
-
     return embed
 
 
