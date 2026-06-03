@@ -183,12 +183,35 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     if extra_parts:
         embed.add_field(name="📊 Stats (+12)", value=" │ ".join(extra_parts), inline=False)
 
+    # ── Traits ────────────────────────────────────────────────────────────────
+    traits = (stats.get("traits") or {})
+    if traits:
+        trait_lines = []
+        for key, values in traits.items():
+            fmt = _stat_formats.get(key)
+            name = fmt["name"] if fmt else key
+            multiplier = fmt["multiplier"] if fmt else 1
+            value_format = fmt["valueFormat"] if fmt else "{0}"
+            formatted_values = []
+            for v in values:
+                computed = round(v * multiplier, 2)
+                computed_str = str(int(computed)) if computed == int(computed) else str(computed)
+                formatted_values.append(value_format.replace("{0}", computed_str))
+            trait_lines.append(f"**{name}**: {' | '.join(formatted_values)}")
+        embed.add_field(
+            name="🎲 Possible Traits",
+            value="\n".join(trait_lines),
+            inline=False
+        )
+
     # ── Description ───────────────────────────────────────────────────────────
     raw_desc = item.get("description", "")
     if raw_desc:
         clean = re.sub(r"<[^>]+>", "", raw_desc).strip()
         if clean:
             embed.add_field(name="📖 Description", value=clean, inline=False)
+
+    embed.set_footer(text="Data from questlog.gg", icon_url="https://questlog.gg/favicon.ico")
 
     return embed
 
