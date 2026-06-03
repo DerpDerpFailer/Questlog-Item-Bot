@@ -97,7 +97,9 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     # Icon — format CDN: "https://cdn.questlog.gg/throne-and-liberty{path}.webp"
     icon_path = item.get("icon", "")
     if icon_path:
-        embed.set_thumbnail(url=f"https://cdn.questlog.gg/throne-and-liberty{icon_path}.webp")
+        icon_url = f"https://cdn.questlog.gg/throne-and-liberty{icon_path}.webp"
+        print(f"DEBUG icon_url: {icon_url}")
+        embed.set_thumbnail(url=icon_url)
 
     stats = item.get("itemStats", {})
     lvl = "12"
