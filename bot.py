@@ -242,7 +242,112 @@ async def item_command(interaction: discord.Interaction, item_name: str):
     await interaction.followup.send(embed=embed)
 
 
-# ── Autocomplete ──────────────────────────────────────────────────────────────
+# ── Slash command /price ──────────────────────────────────────────────────────
+
+@tree.command(name="price", description="Auction House price history for an item (EU)")
+@app_commands.describe(
+    item_name="Start typing the item name...",
+    days="History period (default: 7 days)"
+)
+@app_commands.choices(days=[
+    app_commands.Choice(name="7 days",  value=7),
+    app_commands.Choice(name="30 days", value=30),
+])
+async def price_command(interaction: discord.Interaction, item_name: str, days: int = 7):
+    user = f"{interaction.user.name} ({interaction.user.id})"
+    await interaction.response.defer()
+
+    loop = asyncio.get_event_loop()
+    ah = await loop.run_in_executor(None, fetch_ah_price, item_name)
+
+    if ah == "timeout":
+        print(f"[TIMEOUT/price] {user} requested '{item_name}'")
+        await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again.")
+        return
+
+    if not ah:
+        print(f"[NOT FOUND/price] {user} requested '{item_name}'")
+        await interaction.followup.send(
+            f"❌ Item not found: `{item_name}`\n"
+            "💡 Use autocomplete to select an item from the list."
+        )
+        return
+
+    history = ah.get("history", [])
+    buckets_needed = days * 24 // 2  # buckets de 2h
+    window = history[:buckets_needed]
+
+    if not window:
+        await interaction.followup.send("❌ No price history available for this item.")
+        return
+
+    prices  = [e["minPrice"] for e in window if e.get("minPrice") is not None]
+    stocks  = [e["inStock"]  for e in window if e.get("inStock")  is not None]
+
+    current_price = ah.get("minPrice", 0)
+    current_stock = ah.get("inStock", 0)
+    oldest_price  = prices[-1] if prices else current_price
+    avg_price     = round(sum(prices) / len(prices)) if prices else 0
+    min_price     = min(prices) if prices else 0
+    max_price     = max(prices) if prices else 0
+    avg_stock     = round(sum(stocks) / len(stocks)) if stocks else 0
+
+    # Évolution en %
+    if oldest_price and oldest_price != current_price:
+        change_pct = round((current_price - oldest_price) / oldest_price * 100, 1)
+        if change_pct > 0:
+            change_str = f"📈 +{change_pct}%"
+        elif change_pct < 0:
+            change_str = f"📉 {change_pct}%"
+        else:
+            change_str = "➡️ 0%"
+    else:
+        change_str = "➡️ 0%"
+
+    def fmt_price(p: int) -> str:
+        return f"{p:,}".replace(",", " ")
+
+    grade = ah.get("grade", 41)
+    _, _, color = GRADE_CONFIG.get(grade, ("", "", 0x5865F2))
+    item_url = f"https://questlog.gg/throne-and-liberty/en/db/item/{item_name}"
+
+    embed = discord.Embed(
+        title=f"{ah.get('name', item_name)}",
+        url=item_url,
+        description=f"🏪 **Auction House — EU** · Last {days} days",
+        color=color
+    )
+
+    icon_path = ah.get("icon", "")
+    if icon_path:
+        icon_clean = icon_path.rsplit(".", 1)[0]
+        embed.set_thumbnail(url=f"https://cdn.questlog.gg/throne-and-liberty{icon_clean}.webp")
+
+    embed.add_field(name="💰 Current Price", value=f"**{fmt_price(current_price)} ◈**", inline=True)
+    embed.add_field(name="📦 In Stock",      value=f"**{current_stock}**",              inline=True)
+    embed.add_field(name="📊 Change",        value=f"**{change_str}**",                 inline=True)
+    embed.add_field(name="⬇️ Min",           value=f"{fmt_price(min_price)} ◈",         inline=True)
+    embed.add_field(name="⬆️ Max",           value=f"{fmt_price(max_price)} ◈",         inline=True)
+    embed.add_field(name="〰️ Avg Price",     value=f"{fmt_price(avg_price)} ◈",         inline=True)
+    embed.add_field(name="📦 Avg Stock",     value=str(avg_stock),                      inline=True)
+
+    print(f"[PRICE] {user} → {ah.get('name')} ({item_name}) {days}d")
+    await interaction.followup.send(embed=embed)
+
+
+@price_command.autocomplete("item_name")
+async def price_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    if len(current) < 2:
+        return []
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, search_items, current)
+    return [
+        app_commands.Choice(name=r["name"][:100], value=r["id"])
+        for r in results
+    ]
 
 @item_command.autocomplete("item_name")
 async def item_autocomplete(
