@@ -17,6 +17,40 @@ GRADE_CONFIG = {
     43: ("💎", "Epic III", 0x4A148C),
 }
 
+# Stat formats loaded from API at startup
+_stat_formats: dict = {}
+
+
+def load_stat_formats() -> None:
+    global _stat_formats
+    import json
+    try:
+        r = requests.get(
+            f"{BASE_URL}/statFormat.getStatFormat",
+            params={"input": json.dumps({"language": "en"}, separators=(",", ":"))},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10
+        )
+        r.raise_for_status()
+        _stat_formats = r.json()["result"]["data"]
+        print(f"Loaded {len(_stat_formats)} stat formats")
+    except Exception as e:
+        print(f"Warning: could not load stat formats: {e}")
+
+
+def format_stat(key: str, value: float) -> str:
+    """Format a stat value using the API mapping."""
+    fmt = _stat_formats.get(key)
+    if not fmt:
+        return f"{key}: {value}"
+    name = fmt.get("name", key)
+    multiplier = fmt.get("multiplier", 1)
+    value_format = fmt.get("valueFormat", "{0}")
+    computed = round(value * multiplier, 2)
+    # Remove trailing .0 for clean display
+    computed_str = str(int(computed)) if computed == int(computed) else str(computed)
+    return f"{name}: {value_format.replace('{0}', computed_str)}"
+
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
@@ -141,22 +175,10 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         embed.add_field(name=f"✨ {passive['name']}", value=desc or "No description", inline=False)
 
     # ── Extra Stats ───────────────────────────────────────────────────────────
-    STAT_LABELS = {
-        "con": "Fortitude", "per": "Perception", "str": "Strength",
-        "dex": "Dexterity", "wis": "Wisdom", "int": "Intelligence",
-        "attack_range_modifier": "Range",
-    }
-    STAT_MULTIPLY = {"attack_range_modifier": 0.01}
-    STAT_FORMAT   = {"attack_range_modifier": "{0}%"}
-
     extra = stats.get("extra", {}).get(lvl, {})
     extra_parts = []
     for key, val in extra.items():
-        label = STAT_LABELS.get(key, key)
-        multiply = STAT_MULTIPLY.get(key, 1)
-        fmt = STAT_FORMAT.get(key, "{0}")
-        computed = round(val * multiply, 2)
-        extra_parts.append(f"{label}: {fmt.replace('{0}', str(computed))}" if fmt != "{0}" else f"{label}: {computed}")
+        extra_parts.append(format_stat(key, val))
 
     if extra_parts:
         embed.add_field(name="📊 Stats (+12)", value=" │ ".join(extra_parts), inline=False)
@@ -216,6 +238,7 @@ async def item_autocomplete(
 
 @client.event
 async def on_ready():
+    load_stat_formats()
     try:
         synced = await tree.sync()
         print(f"Synced {len(synced)} command(s)")
