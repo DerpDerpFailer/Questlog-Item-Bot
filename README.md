@@ -5,9 +5,10 @@ A Discord bot to look up Throne & Liberty items directly in your server, powered
 ## ✨ Features
 
 - **Autocomplete** — start typing an item name and pick from a live list
-- **Stats at +12** — all stats shown at maximum enchantment level
+- **Stats at max level** — stats shown at the item's highest available level (or its fixed level for gear that has one)
 - **Unique skill** — skill name and full description
 - **EU Auction House prices** — min price and stock in real time
+- **Price history** — 7/30 day price trend, average, min/max and stock
 
 ## 🚀 Deployment
 
@@ -26,6 +27,7 @@ docker compose up -d
 | Command | Description |
 |---|---|
 | `/item <name>` | Search for an item by name with autocomplete |
+| `/price <name> [days]` | Auction House price history (EU) — 7 or 30 days |
 
 ## 📡 Data Source
 
