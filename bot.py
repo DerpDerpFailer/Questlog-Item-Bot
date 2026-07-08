@@ -146,10 +146,11 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         embed.set_thumbnail(url=f"https://cdn.questlog.gg/throne-and-liberty{icon_clean}.webp")
 
     stats = item.get("itemStats") or {}
-    lvl = "12"
+    levels = set(stats.get("main") or {}) | set(stats.get("extra") or {})
+    lvl = max(levels, key=int) if levels else None
 
     # ── Base Stats ────────────────────────────────────────────────────────────
-    main = (stats.get("main") or {}).get(lvl, {})
+    main = (stats.get("main") or {}).get(lvl, {}) if lvl else {}
     stat_lines = []
     mainhand = main.get("mainhand")
     offhand = main.get("offhand")
@@ -167,7 +168,7 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     if extra_main.get("armor"):
         stat_lines.append(f"Armor: {extra_main['armor']}")
     if stat_lines:
-        embed.add_field(name="⚔️ Base Stats (+12)", value=" │ ".join(stat_lines), inline=False)
+        embed.add_field(name=f"⚔️ Base Stats (Lv. {lvl})", value=" │ ".join(stat_lines), inline=False)
 
     # ── Unique Skill ──────────────────────────────────────────────────────────
     passive = item.get("passives")
@@ -176,10 +177,10 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
         embed.add_field(name=f"✨ {passive['name']}", value=desc or "No description", inline=False)
 
     # ── Extra Stats ───────────────────────────────────────────────────────────
-    extra = (stats.get("extra") or {}).get(lvl, {})
+    extra = (stats.get("extra") or {}).get(lvl, {}) if lvl else {}
     extra_parts = [format_stat(k, v) for k, v in extra.items()]
     if extra_parts:
-        embed.add_field(name="📊 Stats (+12)", value=" │ ".join(extra_parts), inline=False)
+        embed.add_field(name=f"📊 Stats (Lv. {lvl})", value=" │ ".join(extra_parts), inline=False)
 
     # ── Traits ────────────────────────────────────────────────────────────────
     traits = stats.get("traits") or {}
