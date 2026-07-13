@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import time
 import asyncio
 import requests
@@ -11,6 +12,14 @@ BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
 
 API_TIMEOUT = 8          # secondes avant timeout questlog
 STAT_FORMAT_TTL = 86400  # 24h en secondes
+DATA_DIR = "data"
+
+LOOT_FIELD_NAME = "🎯 Loot Interest"
+LOOT_CATEGORIES = [
+    ("pvp", "Main PvP", "loot_pvp"),
+    ("pve", "Main PvE", "loot_pve"),
+    ("alt", "Alternate Build", "loot_alt"),
+]
 
 # Grade → rarity label + color
 GRADE_CONFIG = {
@@ -27,7 +36,6 @@ _stat_formats_loaded_at: float = 0.0
 
 def load_stat_formats() -> None:
     global _stat_formats, _stat_formats_loaded_at
-    import json
     try:
         r = requests.get(
             f"{BASE_URL}/statFormat.getStatFormat",
@@ -69,7 +77,6 @@ tree = app_commands.CommandTree(client)
 # ── API helpers ───────────────────────────────────────────────────────────────
 
 def api_get(endpoint: str, input_data: dict) -> dict | None:
-    import json
     try:
         r = requests.get(
             f"{BASE_URL}/{endpoint}",
@@ -110,6 +117,100 @@ def fetch_ah_price(item_id: str) -> dict | str | None:
         "language": "en", "regionId": "eu-f",
         "itemId": item_id, "timespan": 360
     })
+
+
+# ── Guild config (per-server role restrictions for /item-loot) ────────────────
+
+def _guild_config_path(guild_id: int) -> str:
+    return os.path.join(DATA_DIR, f"{guild_id}.json")
+
+
+def load_guild_config(guild_id: int) -> dict:
+    path = _guild_config_path(guild_id)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Warning: could not read guild config {guild_id}: {e}")
+        return {}
+
+
+def save_guild_config(guild_id: int, command_role_id: int, button_role_id: int) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    config = {"command_role_id": command_role_id, "button_role_id": button_role_id}
+    with open(_guild_config_path(guild_id), "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def has_role(member: discord.abc.User, role_id: int) -> bool:
+    return isinstance(member, discord.Member) and any(r.id == role_id for r in member.roles)
+
+
+# ── Loot list (state stored directly in the embed field) ──────────────────────
+
+def format_loot_field(state: dict[str, list[int]]) -> str:
+    lines = []
+    for key, label, _ in LOOT_CATEGORIES:
+        ids = state.get(key, [])
+        value = " ".join(f"<@{i}>" for i in ids) if ids else "—"
+        lines.append(f"**{label}:** {value}")
+    return "\n".join(lines)
+
+
+def parse_loot_field(value: str) -> dict[str, list[int]]:
+    state = {key: [] for key, _, _ in LOOT_CATEGORIES}
+    for line in value.split("\n"):
+        for key, label, _ in LOOT_CATEGORIES:
+            if line.startswith(f"**{label}:**"):
+                state[key] = [int(i) for i in re.findall(r"<@!?(\d+)>", line)]
+    return state
+
+
+class LootView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _handle_click(self, interaction: discord.Interaction, category_key: str):
+        guild_id = interaction.guild_id
+        config = load_guild_config(guild_id) if guild_id else {}
+        button_role_id = config.get("button_role_id")
+        if not button_role_id or not has_role(interaction.user, button_role_id):
+            await interaction.response.send_message(
+                "❌ Tu n'as pas la permission de cliquer sur ces boutons.", ephemeral=True
+            )
+            return
+
+        embed = interaction.message.embeds[0]
+        field_index = next((i for i, f in enumerate(embed.fields) if f.name == LOOT_FIELD_NAME), None)
+        if field_index is None:
+            await interaction.response.send_message("❌ Erreur interne : champ loot introuvable.", ephemeral=True)
+            return
+
+        state = parse_loot_field(embed.fields[field_index].value)
+        user_id = interaction.user.id
+        already_in = user_id in state[category_key]
+        for key in state:
+            if user_id in state[key]:
+                state[key].remove(user_id)
+        if not already_in:
+            state[category_key].append(user_id)
+
+        embed.set_field_at(field_index, name=LOOT_FIELD_NAME, value=format_loot_field(state), inline=False)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Main PvP", style=discord.ButtonStyle.primary, custom_id="loot_pvp")
+    async def pvp_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "pvp")
+
+    @discord.ui.button(label="Main PvE", style=discord.ButtonStyle.success, custom_id="loot_pve")
+    async def pve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "pve")
+
+    @discord.ui.button(label="Alternate Build", style=discord.ButtonStyle.secondary, custom_id="loot_alt")
+    async def alt_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "alt")
 
 
 # ── Build embed ───────────────────────────────────────────────────────────────
@@ -336,6 +437,82 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
     await interaction.followup.send(embed=embed)
 
 
+# ── Slash command /item-loot ──────────────────────────────────────────────────
+
+@tree.command(name="item-loot", description="Search a T&L item and track loot interest (Main PvP / Main PvE / Alternate Build)")
+@app_commands.describe(item_name="Start typing the item name...")
+async def item_loot_command(interaction: discord.Interaction, item_name: str):
+    user = f"{interaction.user.name} ({interaction.user.id})"
+    guild_id = interaction.guild_id
+
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+
+    config = load_guild_config(guild_id)
+    command_role_id = config.get("command_role_id")
+    button_role_id = config.get("button_role_id")
+    if not command_role_id or not button_role_id:
+        await interaction.response.send_message(
+            "⚠️ Cette fonctionnalité n'est pas encore configurée sur ce serveur.\n"
+            "💡 Un administrateur doit exécuter `/item-setup`.",
+            ephemeral=True
+        )
+        return
+    if not has_role(interaction.user, command_role_id):
+        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    loop = asyncio.get_event_loop()
+    item, ah = await asyncio.gather(
+        loop.run_in_executor(None, fetch_item, item_name),
+        loop.run_in_executor(None, fetch_ah_price, item_name),
+    )
+
+    if item == "timeout":
+        print(f"[TIMEOUT/loot] {user} requested '{item_name}'")
+        await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.")
+        return
+
+    if not item:
+        print(f"[NOT FOUND/loot] {user} requested '{item_name}'")
+        await interaction.followup.send(
+            f"❌ Item not found: `{item_name}`\n"
+            "💡 Use autocomplete to select an item from the list."
+        )
+        return
+
+    print(f"[LOOT] {user} → {item.get('name')} ({item.get('id')})")
+    embed = build_embed(item, ah)
+    empty_state = {key: [] for key, _, _ in LOOT_CATEGORIES}
+    embed.add_field(name=LOOT_FIELD_NAME, value=format_loot_field(empty_state), inline=False)
+    await interaction.followup.send(embed=embed, view=LootView())
+
+
+# ── Slash command /item-setup ─────────────────────────────────────────────────
+
+@tree.command(name="item-setup", description="Configure the roles allowed to use /item-loot (admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    role_commande="Role allowed to run /item-loot",
+    role_boutons="Role allowed to click the loot buttons"
+)
+async def item_setup_command(interaction: discord.Interaction, role_commande: discord.Role, role_boutons: discord.Role):
+    guild_id = interaction.guild_id
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+
+    save_guild_config(guild_id, command_role_id=role_commande.id, button_role_id=role_boutons.id)
+    print(f"[SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} command_role={role_commande.id} button_role={role_boutons.id}")
+    await interaction.response.send_message(
+        f"✅ Configuré : `/item-loot` → {role_commande.mention} · Boutons → {role_boutons.mention}",
+        ephemeral=True
+    )
+
+
 @price_command.autocomplete("item_name")
 async def price_autocomplete(
     interaction: discord.Interaction,
@@ -364,12 +541,27 @@ async def item_autocomplete(
         for r in results
     ]
 
+@item_loot_command.autocomplete("item_name")
+async def item_loot_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    if len(current) < 2:
+        return []
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, search_items, current)
+    return [
+        app_commands.Choice(name=r["name"][:100], value=r["id"])
+        for r in results
+    ]
+
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @client.event
 async def on_ready():
     load_stat_formats()
+    client.add_view(LootView())
     try:
         synced = await tree.sync()
         print(f"Synced {len(synced)} command(s)")
