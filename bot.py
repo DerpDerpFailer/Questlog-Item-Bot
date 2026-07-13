@@ -1,5 +1,7 @@
 import os
 import re
+import csv
+import io
 import json
 import time
 import asyncio
@@ -13,6 +15,10 @@ BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
 API_TIMEOUT = 8          # secondes avant timeout questlog
 STAT_FORMAT_TTL = 86400  # 24h en secondes
 DATA_DIR = "data"
+
+EMBED_MAX_CHARS = 5900   # marge sous la limite Discord de 6000 caractères/embed
+EMBED_MAX_FIELDS = 25
+EMBEDS_PER_MESSAGE = 10
 
 LOOT_FIELD_NAME = "🎯 Loot Interest"
 LOOT_CATEGORIES = [
@@ -257,6 +263,62 @@ class WishlistRemoveView(discord.ui.View):
         embed = build_wishlist_embed(interaction.user, user_items)
         view = WishlistRemoveView(self.guild_id, self.user_id, user_items) if user_items else None
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+def build_wishlist_export_embeds(entries: list[tuple[str, list[dict]]]) -> list[discord.Embed]:
+    """entries: list of (display_name, items). Chunks into embeds respecting Discord's
+    25-fields and ~6000-total-characters-per-embed limits."""
+    title = "📜 Wishlists — Export"
+    embeds = []
+    fields: list[tuple[str, str]] = []
+    char_count = len(title)
+
+    def flush():
+        embed = discord.Embed(title=title, color=0x5865F2)
+        for name, value in fields:
+            embed.add_field(name=name, value=value, inline=False)
+        embeds.append(embed)
+
+    for display, items in entries:
+        value = ", ".join(i["name"] for i in items) or "—"
+        if len(value) > 1024:
+            value = value[:1021] + "..."
+        field_chars = len(display) + len(value)
+        if fields and (len(fields) >= EMBED_MAX_FIELDS or char_count + field_chars > EMBED_MAX_CHARS):
+            flush()
+            fields = []
+            char_count = len(title)
+        fields.append((display, value))
+        char_count += field_chars
+
+    if fields:
+        flush()
+    return embeds
+
+
+def build_wishlist_csv(guild: discord.Guild, wishlists: dict) -> discord.File:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Member", "Member ID", "Item Name", "Item ID"])
+    for user_id_str, items in wishlists.items():
+        member = guild.get_member(int(user_id_str))
+        display = member.display_name if member else f"Unknown ({user_id_str})"
+        for item in items:
+            writer.writerow([display, user_id_str, item["name"], item["id"]])
+    return discord.File(io.BytesIO(buf.getvalue().encode("utf-8")), filename="wishlists.csv")
+
+
+class WishlistExportView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="Exporter en CSV", style=discord.ButtonStyle.secondary, emoji="📄")
+    async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = load_guild_config(self.guild_id)
+        wishlists = config.get("wishlists", {})
+        file = build_wishlist_csv(interaction.guild, wishlists)
+        await interaction.response.send_message(file=file, ephemeral=True)
 
 
 # ── Build embed ───────────────────────────────────────────────────────────────
@@ -621,18 +683,150 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
 
 # ── Slash command /wishlist-setup ──────────────────────────────────────────────
 
-@tree.command(name="wishlist-setup", description="Configure the max wishlist size per member (admin only)")
+@tree.command(name="wishlist-setup", description="Configure the wishlist size limit and/or the staff role (admin only)")
 @app_commands.default_permissions(administrator=True)
-@app_commands.describe(limit="Maximum number of items each member can have in their wishlist (1-25)")
-async def wishlist_setup_command(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 25]):
+@app_commands.describe(
+    limit="Maximum number of items each member can have in their wishlist (1-25)",
+    role_staff="Role allowed to use /wishlist-check and /wishlist-export"
+)
+async def wishlist_setup_command(
+    interaction: discord.Interaction,
+    limit: app_commands.Range[int, 1, 25] = None,
+    role_staff: discord.Role = None
+):
+    guild_id = interaction.guild_id
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+    if limit is None and role_staff is None:
+        await interaction.response.send_message("⚠️ Renseigne au moins `limit` ou `role_staff`.", ephemeral=True)
+        return
+
+    updates = {}
+    parts = []
+    if limit is not None:
+        updates["wishlist_limit"] = limit
+        parts.append(f"Limite → **{limit}** items par membre")
+    if role_staff is not None:
+        updates["staff_role_id"] = role_staff.id
+        parts.append(f"Rôle staff (`/wishlist-check`, `/wishlist-export`) → {role_staff.mention}")
+
+    save_guild_config(guild_id, **updates)
+    print(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
+    await interaction.response.send_message("✅ Configuré : " + " · ".join(parts), ephemeral=True)
+
+
+# ── Slash command /wishlist-check ──────────────────────────────────────────────
+
+@tree.command(name="wishlist-check", description="Staff: list members who have this item in their wishlist")
+@app_commands.describe(item_name="Item to check (autocomplete: items currently wishlisted on this server)")
+async def wishlist_check_command(interaction: discord.Interaction, item_name: str):
     guild_id = interaction.guild_id
     if not guild_id:
         await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
         return
 
-    save_guild_config(guild_id, wishlist_limit=limit)
-    print(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} limit={limit}")
-    await interaction.response.send_message(f"✅ Limite de wishlist configurée : **{limit}** items par membre.", ephemeral=True)
+    config = load_guild_config(guild_id)
+    staff_role_id = config.get("staff_role_id")
+    if not staff_role_id:
+        await interaction.response.send_message(
+            "⚠️ Le rôle staff n'est pas encore configuré sur ce serveur.\n"
+            "💡 Un administrateur doit exécuter `/wishlist-setup role_staff:<rôle>`.",
+            ephemeral=True
+        )
+        return
+    if not has_role(interaction.user, staff_role_id):
+        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        return
+
+    wishlists = config.get("wishlists", {})
+    item_display_name = item_name
+    interested = []
+    for user_id_str, items in wishlists.items():
+        match = next((i for i in items if i["id"] == item_name), None)
+        if match:
+            item_display_name = match["name"]
+            member = interaction.guild.get_member(int(user_id_str))
+            interested.append(member.mention if member else f"<@{user_id_str}>")
+
+    if not interested:
+        await interaction.response.send_message(f"📭 Personne n'a cet item dans sa wishlist.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title=f"🔍 Intéressés par : {item_display_name}",
+        description="\n".join(interested),
+        color=0x5865F2
+    )
+    print(f"[WISHLIST CHECK] {interaction.user.name} ({interaction.user.id}) → {item_display_name} ({len(interested)} intéressé(s))")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@wishlist_check_command.autocomplete("item_name")
+async def wishlist_check_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    guild_id = interaction.guild_id
+    if not guild_id:
+        return []
+    config = load_guild_config(guild_id)
+    wishlists = config.get("wishlists", {})
+    seen = {}
+    for items in wishlists.values():
+        for i in items:
+            seen[i["id"]] = i["name"]
+    current_lower = current.lower()
+    matches = sorted(
+        (name, iid) for iid, name in seen.items() if current_lower in name.lower()
+    )
+    return [app_commands.Choice(name=name[:100], value=iid) for name, iid in matches[:25]]
+
+
+# ── Slash command /wishlist-export ─────────────────────────────────────────────
+
+@tree.command(name="wishlist-export", description="Staff: view every member's wishlist on this server, with CSV export")
+async def wishlist_export_command(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+
+    config = load_guild_config(guild_id)
+    staff_role_id = config.get("staff_role_id")
+    if not staff_role_id:
+        await interaction.response.send_message(
+            "⚠️ Le rôle staff n'est pas encore configuré sur ce serveur.\n"
+            "💡 Un administrateur doit exécuter `/wishlist-setup role_staff:<rôle>`.",
+            ephemeral=True
+        )
+        return
+    if not has_role(interaction.user, staff_role_id):
+        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        return
+
+    wishlists = config.get("wishlists", {})
+    entries = []
+    for user_id_str, items in wishlists.items():
+        if not items:
+            continue
+        member = interaction.guild.get_member(int(user_id_str))
+        display = member.display_name if member else f"Unknown ({user_id_str})"
+        entries.append((display, items))
+    entries.sort(key=lambda e: e[0].lower())
+
+    if not entries:
+        await interaction.response.send_message("📭 Aucune wishlist enregistrée sur ce serveur.", ephemeral=True)
+        return
+
+    embeds = build_wishlist_export_embeds(entries)
+    print(f"[WISHLIST EXPORT] {interaction.user.name} ({interaction.user.id}) → {len(entries)} membre(s), {len(embeds)} embed(s)")
+
+    await interaction.response.send_message(
+        embeds=embeds[:EMBEDS_PER_MESSAGE], view=WishlistExportView(guild_id), ephemeral=True
+    )
+    for start in range(EMBEDS_PER_MESSAGE, len(embeds), EMBEDS_PER_MESSAGE):
+        await interaction.followup.send(embeds=embeds[start:start + EMBEDS_PER_MESSAGE], ephemeral=True)
 
 
 @price_command.autocomplete("item_name")

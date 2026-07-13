@@ -33,7 +33,9 @@ docker compose up -d
 | `/item-loot <name>` | Same as `/item`, plus Main PvP / Main PvE / Alternate Build loot interest buttons (restricted roles, see `/item-setup`) |
 | `/item-setup <role_commande> <role_boutons>` | Admin only — configure which roles can run `/item-loot` and click its buttons |
 | `/wishlist [name]` | Add an item to your wishlist, or view/edit your current wishlist if no name is given |
-| `/wishlist-setup <limit>` | Admin only — configure the max wishlist size per member (1-25) |
+| `/wishlist-setup [limit] [role_staff]` | Admin only — configure the max wishlist size per member (1-25) and/or the staff role for `/wishlist-check` and `/wishlist-export` |
+| `/wishlist-check <name>` | Staff only — list every member who has this item in their wishlist |
+| `/wishlist-export` | Staff only — view every member's wishlist on this server, with a button to export as CSV |
 
 ## 📡 Data Source
 
