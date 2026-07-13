@@ -750,7 +750,7 @@ async def wishlist_check_command(interaction: discord.Interaction, item_name: st
             interested.append(member.mention if member else f"<@{user_id_str}>")
 
     if not interested:
-        await interaction.response.send_message(f"📭 Personne n'a cet item dans sa wishlist.", ephemeral=True)
+        await interaction.response.send_message(f"📭 Personne n'a cet item dans sa wishlist.")
         return
 
     embed = discord.Embed(
@@ -759,7 +759,7 @@ async def wishlist_check_command(interaction: discord.Interaction, item_name: st
         color=0x5865F2
     )
     print(f"[WISHLIST CHECK] {interaction.user.name} ({interaction.user.id}) → {item_display_name} ({len(interested)} intéressé(s))")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @wishlist_check_command.autocomplete("item_name")
