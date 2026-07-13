@@ -854,17 +854,17 @@ async def wishlist_export_command(interaction: discord.Interaction):
     entries.sort(key=lambda e: e[0].lower())
 
     if not entries:
-        await interaction.response.send_message("📭 Aucune wishlist enregistrée sur ce serveur.", ephemeral=True)
+        await interaction.response.send_message("📭 Aucune wishlist enregistrée sur ce serveur.")
         return
 
     embeds = build_wishlist_export_embeds(entries)
     print(f"[WISHLIST EXPORT] {interaction.user.name} ({interaction.user.id}) → {len(entries)} membre(s), {len(embeds)} embed(s)")
 
     await interaction.response.send_message(
-        embeds=embeds[:EMBEDS_PER_MESSAGE], view=WishlistExportView(guild_id), ephemeral=True
+        embeds=embeds[:EMBEDS_PER_MESSAGE], view=WishlistExportView(guild_id)
     )
     for start in range(EMBEDS_PER_MESSAGE, len(embeds), EMBEDS_PER_MESSAGE):
-        await interaction.followup.send(embeds=embeds[start:start + EMBEDS_PER_MESSAGE], ephemeral=True)
+        await interaction.followup.send(embeds=embeds[start:start + EMBEDS_PER_MESSAGE])
 
 
 # ── Slash command /wishlist-clean ──────────────────────────────────────────────
