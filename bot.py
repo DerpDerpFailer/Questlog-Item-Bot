@@ -168,24 +168,31 @@ async def resolve_member_name(guild: discord.Guild, user_id: int) -> str:
     return member.display_name if member else f"Ancien membre ({user_id})"
 
 
-async def clean_guild_wishlists(guild: discord.Guild) -> int:
+async def clean_guild_wishlists(guild: discord.Guild) -> list[tuple[str, str]]:
     """Remove wishlist entries belonging to members no longer in the guild.
     Only removes on a confirmed 404 (member truly gone) — any other API error
-    leaves the entry untouched to avoid false positives from transient issues."""
+    leaves the entry untouched to avoid false positives from transient issues.
+    Returns a list of (user_id, name) for the entries removed."""
     config = load_guild_config(guild.id)
     wishlists = config.get("wishlists", {})
     if not wishlists:
-        return 0
+        return []
 
-    removed = 0
+    removed = []
     for user_id_str in list(wishlists.keys()):
         if guild.get_member(int(user_id_str)) is not None:
             continue
         try:
             await guild.fetch_member(int(user_id_str))
         except discord.NotFound:
+            name = user_id_str
+            try:
+                user = await client.fetch_user(int(user_id_str))
+                name = user.name
+            except discord.HTTPException:
+                pass
             del wishlists[user_id_str]
-            removed += 1
+            removed.append((user_id_str, name))
         except discord.HTTPException as e:
             print(f"Warning: could not verify member {user_id_str} in guild {guild.id}: {e}")
         await asyncio.sleep(0.5)
@@ -193,6 +200,17 @@ async def clean_guild_wishlists(guild: discord.Guild) -> int:
     if removed:
         save_guild_config(guild.id, wishlists=wishlists)
     return removed
+
+
+def build_wishlist_clean_embed(removed: list[tuple[str, str]]) -> discord.Embed:
+    description = "\n".join(f"• {name} (`{uid}`)" for uid, name in removed)
+    if len(description) > 4000:
+        description = description[:3997] + "..."
+    return discord.Embed(
+        title=f"🧹 Nettoyage — {len(removed)} membre(s) retiré(s)",
+        description=description,
+        color=0x5865F2
+    )
 
 
 # ── Loot list (state stored directly in the embed field) ──────────────────────
@@ -722,23 +740,25 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
 
 # ── Slash command /wishlist-setup ──────────────────────────────────────────────
 
-@tree.command(name="wishlist-setup", description="Configure the wishlist size limit and/or the staff role (admin only)")
+@tree.command(name="wishlist-setup", description="Configure the wishlist size limit, staff role and/or cleanup log channel (admin only)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     limit="Maximum number of items each member can have in their wishlist (1-25)",
-    role_staff="Role allowed to use /wishlist-check and /wishlist-export"
+    role_staff="Role allowed to use /wishlist-check and /wishlist-export",
+    log_channel="Channel where weekly auto-cleanup reports are posted (only when members were removed)"
 )
 async def wishlist_setup_command(
     interaction: discord.Interaction,
     limit: app_commands.Range[int, 1, 25] = None,
-    role_staff: discord.Role = None
+    role_staff: discord.Role = None,
+    log_channel: discord.TextChannel = None
 ):
     guild_id = interaction.guild_id
     if not guild_id:
         await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
         return
-    if limit is None and role_staff is None:
-        await interaction.response.send_message("⚠️ Renseigne au moins `limit` ou `role_staff`.", ephemeral=True)
+    if limit is None and role_staff is None and log_channel is None:
+        await interaction.response.send_message("⚠️ Renseigne au moins `limit`, `role_staff` ou `log_channel`.", ephemeral=True)
         return
 
     updates = {}
@@ -749,6 +769,9 @@ async def wishlist_setup_command(
     if role_staff is not None:
         updates["staff_role_id"] = role_staff.id
         parts.append(f"Rôle staff (`/wishlist-check`, `/wishlist-export`) → {role_staff.mention}")
+    if log_channel is not None:
+        updates["log_channel_id"] = log_channel.id
+        parts.append(f"Salon de log du nettoyage auto → {log_channel.mention}")
 
     save_guild_config(guild_id, **updates)
     print(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
@@ -891,8 +914,13 @@ async def wishlist_clean_command(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
     removed = await clean_guild_wishlists(interaction.guild)
-    print(f"[WISHLIST CLEAN] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} removed={removed}")
-    await interaction.followup.send("🧹 Nettoyage effectué. Détails dans les logs du bot.", ephemeral=True)
+    print(f"[WISHLIST CLEAN] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} removed={len(removed)}: {removed}")
+
+    if not removed:
+        await interaction.followup.send("🧹 Nettoyage effectué : aucun membre parti trouvé.", ephemeral=True)
+        return
+
+    await interaction.followup.send(embed=build_wishlist_clean_embed(removed), ephemeral=True)
 
 
 @price_command.autocomplete("item_name")
@@ -954,13 +982,27 @@ async def wishlist_autocomplete(
 
 # ── Background tasks ─────────────────────────────────────────────────────────
 
+async def run_weekly_cleanup_for_guild(guild: discord.Guild) -> None:
+    removed = await clean_guild_wishlists(guild)
+    if not removed:
+        return
+    print(f"[WISHLIST CLEAN/auto] guild={guild.id} removed={removed}")
+
+    log_channel_id = load_guild_config(guild.id).get("log_channel_id")
+    if not log_channel_id:
+        return
+    channel = guild.get_channel(log_channel_id)
+    if channel is None:
+        print(f"Warning: log channel {log_channel_id} not found in guild {guild.id}")
+        return
+    await channel.send(embed=build_wishlist_clean_embed(removed))
+
+
 @tasks.loop(hours=24 * 7)
 async def weekly_wishlist_cleanup():
     for guild in client.guilds:
         try:
-            removed = await clean_guild_wishlists(guild)
-            if removed:
-                print(f"[WISHLIST CLEAN/auto] guild={guild.id} removed={removed}")
+            await run_weekly_cleanup_for_guild(guild)
         except Exception as e:
             print(f"Warning: auto wishlist cleanup failed for guild {guild.id}: {e}")
 
