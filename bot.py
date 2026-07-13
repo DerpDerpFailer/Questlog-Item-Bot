@@ -8,6 +8,7 @@ import asyncio
 import requests
 import discord
 from discord import app_commands
+from discord.ext import tasks
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
@@ -165,6 +166,33 @@ async def resolve_member_name(guild: discord.Guild, user_id: int) -> str:
         except discord.HTTPException:
             member = None
     return member.display_name if member else f"Ancien membre ({user_id})"
+
+
+async def clean_guild_wishlists(guild: discord.Guild) -> int:
+    """Remove wishlist entries belonging to members no longer in the guild.
+    Only removes on a confirmed 404 (member truly gone) — any other API error
+    leaves the entry untouched to avoid false positives from transient issues."""
+    config = load_guild_config(guild.id)
+    wishlists = config.get("wishlists", {})
+    if not wishlists:
+        return 0
+
+    removed = 0
+    for user_id_str in list(wishlists.keys()):
+        if guild.get_member(int(user_id_str)) is not None:
+            continue
+        try:
+            await guild.fetch_member(int(user_id_str))
+        except discord.NotFound:
+            del wishlists[user_id_str]
+            removed += 1
+        except discord.HTTPException as e:
+            print(f"Warning: could not verify member {user_id_str} in guild {guild.id}: {e}")
+        await asyncio.sleep(0.5)
+
+    if removed:
+        save_guild_config(guild.id, wishlists=wishlists)
+    return removed
 
 
 # ── Loot list (state stored directly in the embed field) ──────────────────────
@@ -839,6 +867,34 @@ async def wishlist_export_command(interaction: discord.Interaction):
         await interaction.followup.send(embeds=embeds[start:start + EMBEDS_PER_MESSAGE], ephemeral=True)
 
 
+# ── Slash command /wishlist-clean ──────────────────────────────────────────────
+
+@tree.command(name="wishlist-clean", description="Staff: remove wishlists belonging to members who left the server")
+async def wishlist_clean_command(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+
+    config = load_guild_config(guild_id)
+    staff_role_id = config.get("staff_role_id")
+    if not staff_role_id:
+        await interaction.response.send_message(
+            "⚠️ Le rôle staff n'est pas encore configuré sur ce serveur.\n"
+            "💡 Un administrateur doit exécuter `/wishlist-setup role_staff:<rôle>`.",
+            ephemeral=True
+        )
+        return
+    if not has_role(interaction.user, staff_role_id):
+        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    removed = await clean_guild_wishlists(interaction.guild)
+    print(f"[WISHLIST CLEAN] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} removed={removed}")
+    await interaction.followup.send("🧹 Nettoyage effectué. Détails dans les logs du bot.", ephemeral=True)
+
+
 @price_command.autocomplete("item_name")
 async def price_autocomplete(
     interaction: discord.Interaction,
@@ -896,12 +952,27 @@ async def wishlist_autocomplete(
     ]
 
 
+# ── Background tasks ─────────────────────────────────────────────────────────
+
+@tasks.loop(hours=24 * 7)
+async def weekly_wishlist_cleanup():
+    for guild in client.guilds:
+        try:
+            removed = await clean_guild_wishlists(guild)
+            if removed:
+                print(f"[WISHLIST CLEAN/auto] guild={guild.id} removed={removed}")
+        except Exception as e:
+            print(f"Warning: auto wishlist cleanup failed for guild {guild.id}: {e}")
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @client.event
 async def on_ready():
     load_stat_formats()
     client.add_view(LootView())
+    if not weekly_wishlist_cleanup.is_running():
+        weekly_wishlist_cleanup.start()
     try:
         synced = await tree.sync()
         print(f"Synced {len(synced)} command(s)")

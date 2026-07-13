@@ -10,7 +10,7 @@ A Discord bot to look up Throne & Liberty items directly in your server, powered
 - **EU Auction House prices** — min price and stock in real time
 - **Price history** — 7/30 day price trend, average, min/max and stock
 - **Loot tracking** — role-gated Main PvP / Main PvE / Alternate Build interest list per item
-- **Loot wishlist** — each member can wishlist up to a configurable number of items per server
+- **Loot wishlist** — each member can wishlist up to a configurable number of items per server, staff can check/export who wants what, and stale entries from members who left are cleaned up automatically every week
 
 ## 🚀 Deployment
 
@@ -36,6 +36,7 @@ docker compose up -d
 | `/wishlist-setup [limit] [role_staff]` | Admin only — configure the max wishlist size per member (1-25) and/or the staff role for `/wishlist-check` and `/wishlist-export` |
 | `/wishlist-check <name>` | Staff only — list every member who has this item in their wishlist |
 | `/wishlist-export` | Staff only — view every member's wishlist on this server, with a button to export as CSV |
+| `/wishlist-clean` | Staff only — remove wishlists belonging to members who left the server (also runs automatically every week) |
 
 ## 📡 Data Source
 
