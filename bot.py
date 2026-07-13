@@ -137,9 +137,10 @@ def load_guild_config(guild_id: int) -> dict:
         return {}
 
 
-def save_guild_config(guild_id: int, command_role_id: int, button_role_id: int) -> None:
+def save_guild_config(guild_id: int, **updates) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
-    config = {"command_role_id": command_role_id, "button_role_id": button_role_id}
+    config = load_guild_config(guild_id)
+    config.update(updates)
     with open(_guild_config_path(guild_id), "w") as f:
         json.dump(config, f, indent=2)
 
@@ -211,6 +212,51 @@ class LootView(discord.ui.View):
     @discord.ui.button(label="Alternate Build", style=discord.ButtonStyle.secondary, custom_id="loot_alt")
     async def alt_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "alt")
+
+
+# ── Wishlist ───────────────────────────────────────────────────────────────────
+
+def build_wishlist_embed(user: discord.abc.User, items: list[dict]) -> discord.Embed:
+    embed = discord.Embed(title=f"📜 Wishlist — {user.display_name}", color=0x5865F2)
+    if not items:
+        embed.description = "Ta wishlist est vide. Utilise `/wishlist <item>` pour en ajouter."
+    else:
+        embed.description = "\n".join(
+            f"• [{item['name']}](https://questlog.gg/throne-and-liberty/en/db/item/{item['id']})"
+            for item in items
+        )
+    return embed
+
+
+class WishlistRemoveView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, items: list[dict]):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        select = discord.ui.Select(
+            placeholder="Retirer un item de la wishlist...",
+            options=[discord.SelectOption(label=item["name"][:100], value=item["id"]) for item in items]
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        item_id = interaction.data["values"][0]
+        config = load_guild_config(self.guild_id)
+        wishlists = config.get("wishlists", {})
+        user_key = str(self.user_id)
+        user_items = wishlists.get(user_key, [])
+        removed = next((i for i in user_items if i["id"] == item_id), None)
+        user_items = [i for i in user_items if i["id"] != item_id]
+        wishlists[user_key] = user_items
+        save_guild_config(self.guild_id, wishlists=wishlists)
+
+        if removed:
+            print(f"[WISHLIST REMOVE] {interaction.user.name} ({interaction.user.id}) → {removed['name']} ({removed['id']})")
+
+        embed = build_wishlist_embed(interaction.user, user_items)
+        view = WishlistRemoveView(self.guild_id, self.user_id, user_items) if user_items else None
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 # ── Build embed ───────────────────────────────────────────────────────────────
@@ -513,6 +559,82 @@ async def item_setup_command(interaction: discord.Interaction, role_commande: di
     )
 
 
+# ── Slash command /wishlist ────────────────────────────────────────────────────
+
+@tree.command(name="wishlist", description="Add an item to your loot wishlist, or view your current wishlist")
+@app_commands.describe(item_name="Item to add (leave empty to view your current wishlist)")
+async def wishlist_command(interaction: discord.Interaction, item_name: str = None):
+    guild_id = interaction.guild_id
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+
+    config = load_guild_config(guild_id)
+    limit = config.get("wishlist_limit")
+    if not limit:
+        await interaction.response.send_message(
+            "⚠️ La wishlist n'est pas encore configurée sur ce serveur.\n"
+            "💡 Un administrateur doit exécuter `/wishlist-setup`.",
+            ephemeral=True
+        )
+        return
+
+    wishlists = config.get("wishlists", {})
+    user_key = str(interaction.user.id)
+    user_items = wishlists.get(user_key, [])
+
+    if item_name is None:
+        view = WishlistRemoveView(guild_id, interaction.user.id, user_items) if user_items else None
+        await interaction.response.send_message(embed=build_wishlist_embed(interaction.user, user_items), view=view, ephemeral=True)
+        return
+
+    if any(i["id"] == item_name for i in user_items):
+        await interaction.response.send_message("⚠️ Cet item est déjà dans ta wishlist.", ephemeral=True)
+        return
+    if len(user_items) >= limit:
+        await interaction.response.send_message(
+            f"❌ Ta wishlist est pleine ({len(user_items)}/{limit}). Retire un item via `/wishlist` avant d'en ajouter un nouveau.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    loop = asyncio.get_event_loop()
+    item = await loop.run_in_executor(None, fetch_item, item_name)
+
+    if item == "timeout":
+        await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.", ephemeral=True)
+        return
+    if not item:
+        await interaction.followup.send(
+            f"❌ Item not found: `{item_name}`\n💡 Use autocomplete to select an item from the list.",
+            ephemeral=True
+        )
+        return
+
+    user_items.append({"id": item.get("id"), "name": item.get("name")})
+    wishlists[user_key] = user_items
+    save_guild_config(guild_id, wishlists=wishlists)
+    print(f"[WISHLIST ADD] {interaction.user.name} ({interaction.user.id}) → {item.get('name')} ({item.get('id')}) [{len(user_items)}/{limit}]")
+    await interaction.followup.send(f"✅ **{item.get('name')}** ajouté à ta wishlist ({len(user_items)}/{limit}).", ephemeral=True)
+
+
+# ── Slash command /wishlist-setup ──────────────────────────────────────────────
+
+@tree.command(name="wishlist-setup", description="Configure the max wishlist size per member (admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(limit="Maximum number of items each member can have in their wishlist (1-25)")
+async def wishlist_setup_command(interaction: discord.Interaction, limit: app_commands.Range[int, 1, 25]):
+    guild_id = interaction.guild_id
+    if not guild_id:
+        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        return
+
+    save_guild_config(guild_id, wishlist_limit=limit)
+    print(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} limit={limit}")
+    await interaction.response.send_message(f"✅ Limite de wishlist configurée : **{limit}** items par membre.", ephemeral=True)
+
+
 @price_command.autocomplete("item_name")
 async def price_autocomplete(
     interaction: discord.Interaction,
@@ -543,6 +665,20 @@ async def item_autocomplete(
 
 @item_loot_command.autocomplete("item_name")
 async def item_loot_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    if len(current) < 2:
+        return []
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, search_items, current)
+    return [
+        app_commands.Choice(name=r["name"][:100], value=r["id"])
+        for r in results
+    ]
+
+@wishlist_command.autocomplete("item_name")
+async def wishlist_autocomplete(
     interaction: discord.Interaction,
     current: str,
 ) -> list[app_commands.Choice[str]]:
