@@ -155,6 +155,18 @@ def has_role(member: discord.abc.User, role_id: int) -> bool:
     return isinstance(member, discord.Member) and any(r.id == role_id for r in member.roles)
 
 
+async def resolve_member_name(guild: discord.Guild, user_id: int) -> str:
+    """guild.get_member() only hits the local cache (incomplete without the privileged
+    Members intent), so fall back to a REST fetch for members not in cache."""
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            member = None
+    return member.display_name if member else f"Ancien membre ({user_id})"
+
+
 # ── Loot list (state stored directly in the embed field) ──────────────────────
 
 def format_loot_field(state: dict[str, list[int]]) -> str:
@@ -296,13 +308,12 @@ def build_wishlist_export_embeds(entries: list[tuple[str, list[dict]]]) -> list[
     return embeds
 
 
-def build_wishlist_csv(guild: discord.Guild, wishlists: dict) -> discord.File:
+async def build_wishlist_csv(guild: discord.Guild, wishlists: dict) -> discord.File:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Member", "Member ID", "Item Name", "Item ID"])
     for user_id_str, items in wishlists.items():
-        member = guild.get_member(int(user_id_str))
-        display = member.display_name if member else f"Unknown ({user_id_str})"
+        display = await resolve_member_name(guild, int(user_id_str))
         for item in items:
             writer.writerow([display, user_id_str, item["name"], item["id"]])
     return discord.File(io.BytesIO(buf.getvalue().encode("utf-8")), filename="wishlists.csv")
@@ -317,7 +328,7 @@ class WishlistExportView(discord.ui.View):
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = load_guild_config(self.guild_id)
         wishlists = config.get("wishlists", {})
-        file = build_wishlist_csv(interaction.guild, wishlists)
+        file = await build_wishlist_csv(interaction.guild, wishlists)
         await interaction.response.send_message(file=file, ephemeral=True)
 
 
@@ -810,8 +821,7 @@ async def wishlist_export_command(interaction: discord.Interaction):
     for user_id_str, items in wishlists.items():
         if not items:
             continue
-        member = interaction.guild.get_member(int(user_id_str))
-        display = member.display_name if member else f"Unknown ({user_id_str})"
+        display = await resolve_member_name(interaction.guild, int(user_id_str))
         entries.append((display, items))
     entries.sort(key=lambda e: e[0].lower())
 
