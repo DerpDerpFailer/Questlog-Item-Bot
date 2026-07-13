@@ -13,11 +13,11 @@ from discord.ext import tasks
 TOKEN = os.getenv("DISCORD_TOKEN")
 BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
 
-API_TIMEOUT = 8          # secondes avant timeout questlog
-STAT_FORMAT_TTL = 86400  # 24h en secondes
+API_TIMEOUT = 8          # seconds before questlog times out
+STAT_FORMAT_TTL = 86400  # 24h in seconds
 DATA_DIR = "data"
 
-EMBED_MAX_CHARS = 5900   # marge sous la limite Discord de 6000 caractères/embed
+EMBED_MAX_CHARS = 5900   # margin under Discord's 6000-character-per-embed limit
 EMBED_MAX_FIELDS = 25
 EMBEDS_PER_MESSAGE = 10
 
@@ -165,7 +165,7 @@ async def resolve_member_name(guild: discord.Guild, user_id: int) -> str:
             member = await guild.fetch_member(user_id)
         except discord.HTTPException:
             member = None
-    return member.display_name if member else f"Ancien membre ({user_id})"
+    return member.display_name if member else f"Former member ({user_id})"
 
 
 async def clean_guild_wishlists(guild: discord.Guild) -> list[tuple[str, str]]:
@@ -207,7 +207,7 @@ def build_wishlist_clean_embed(removed: list[tuple[str, str]]) -> discord.Embed:
     if len(description) > 4000:
         description = description[:3997] + "..."
     return discord.Embed(
-        title=f"🧹 Nettoyage — {len(removed)} membre(s) retiré(s)",
+        title=f"🧹 Cleanup — {len(removed)} member(s) removed",
         description=description,
         color=0x5865F2
     )
@@ -243,14 +243,14 @@ class LootView(discord.ui.View):
         button_role_id = config.get("button_role_id")
         if not button_role_id or not has_role(interaction.user, button_role_id):
             await interaction.response.send_message(
-                "❌ Tu n'as pas la permission de cliquer sur ces boutons.", ephemeral=True
+                "❌ You don't have permission to click these buttons.", ephemeral=True
             )
             return
 
         embed = interaction.message.embeds[0]
         field_index = next((i for i, f in enumerate(embed.fields) if f.name == LOOT_FIELD_NAME), None)
         if field_index is None:
-            await interaction.response.send_message("❌ Erreur interne : champ loot introuvable.", ephemeral=True)
+            await interaction.response.send_message("❌ Internal error: loot field not found.", ephemeral=True)
             return
 
         state = parse_loot_field(embed.fields[field_index].value)
@@ -283,7 +283,7 @@ class LootView(discord.ui.View):
 def build_wishlist_embed(user: discord.abc.User, items: list[dict]) -> discord.Embed:
     embed = discord.Embed(title=f"📜 Wishlist — {user.display_name}", color=0x5865F2)
     if not items:
-        embed.description = "Ta wishlist est vide. Utilise `/wishlist <item>` pour en ajouter."
+        embed.description = "Your wishlist is empty. Use `/wishlist <item>` to add one."
     else:
         embed.description = "\n".join(
             f"• [{item['name']}](https://questlog.gg/throne-and-liberty/en/db/item/{item['id']})"
@@ -298,7 +298,7 @@ class WishlistRemoveView(discord.ui.View):
         self.guild_id = guild_id
         self.user_id = user_id
         select = discord.ui.Select(
-            placeholder="Retirer un item de la wishlist...",
+            placeholder="Remove an item from the wishlist...",
             options=[discord.SelectOption(label=item["name"][:100], value=item["id"]) for item in items]
         )
         select.callback = self._on_select
@@ -370,7 +370,7 @@ class WishlistExportView(discord.ui.View):
         super().__init__(timeout=300)
         self.guild_id = guild_id
 
-    @discord.ui.button(label="Exporter en CSV", style=discord.ButtonStyle.secondary, emoji="📄")
+    @discord.ui.button(label="Export as CSV", style=discord.ButtonStyle.secondary, emoji="📄")
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
         config = load_guild_config(self.guild_id)
         wishlists = config.get("wishlists", {})
@@ -490,7 +490,7 @@ async def item_command(interaction: discord.Interaction, item_name: str):
         loop.run_in_executor(None, fetch_ah_price, item_name),
     )
 
-    # Timeout sur l'item (bloquant)
+    # Timeout on the item (blocking)
     if item == "timeout":
         print(f"[TIMEOUT] {user} requested '{item_name}'")
         await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.")
@@ -541,7 +541,7 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
         return
 
     history = ah.get("history", [])
-    buckets_needed = days * 24 // 2  # buckets de 2h
+    buckets_needed = days * 24 // 2  # 2h buckets
     window = history[:buckets_needed]
 
     if not window:
@@ -559,7 +559,7 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
     max_price     = max(prices) if prices else 0
     avg_stock     = round(sum(stocks) / len(stocks)) if stocks else 0
 
-    # Évolution en %
+    # % change
     if oldest_price and oldest_price != current_price:
         change_pct = round((current_price - oldest_price) / oldest_price * 100, 1)
         if change_pct > 0:
@@ -611,7 +611,7 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
     guild_id = interaction.guild_id
 
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     config = load_guild_config(guild_id)
@@ -619,13 +619,13 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
     button_role_id = config.get("button_role_id")
     if not command_role_id or not button_role_id:
         await interaction.response.send_message(
-            "⚠️ Cette fonctionnalité n'est pas encore configurée sur ce serveur.\n"
-            "💡 Un administrateur doit exécuter `/item-setup`.",
+            "⚠️ This feature isn't configured on this server yet.\n"
+            "💡 An admin needs to run `/item-setup`.",
             ephemeral=True
         )
         return
     if not has_role(interaction.user, command_role_id):
-        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -661,19 +661,19 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
 @tree.command(name="item-setup", description="Configure the roles allowed to use /item-loot (admin only)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    role_commande="Role allowed to run /item-loot",
-    role_boutons="Role allowed to click the loot buttons"
+    command_role="Role allowed to run /item-loot",
+    button_role="Role allowed to click the loot buttons"
 )
-async def item_setup_command(interaction: discord.Interaction, role_commande: discord.Role, role_boutons: discord.Role):
+async def item_setup_command(interaction: discord.Interaction, command_role: discord.Role, button_role: discord.Role):
     guild_id = interaction.guild_id
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
-    save_guild_config(guild_id, command_role_id=role_commande.id, button_role_id=role_boutons.id)
-    print(f"[SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} command_role={role_commande.id} button_role={role_boutons.id}")
+    save_guild_config(guild_id, command_role_id=command_role.id, button_role_id=button_role.id)
+    print(f"[SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} command_role={command_role.id} button_role={button_role.id}")
     await interaction.response.send_message(
-        f"✅ Configuré : `/item-loot` → {role_commande.mention} · Boutons → {role_boutons.mention}",
+        f"✅ Configured: `/item-loot` → {command_role.mention} · Buttons → {button_role.mention}",
         ephemeral=True
     )
 
@@ -685,15 +685,15 @@ async def item_setup_command(interaction: discord.Interaction, role_commande: di
 async def wishlist_command(interaction: discord.Interaction, item_name: str = None):
     guild_id = interaction.guild_id
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     config = load_guild_config(guild_id)
     limit = config.get("wishlist_limit")
     if not limit:
         await interaction.response.send_message(
-            "⚠️ La wishlist n'est pas encore configurée sur ce serveur.\n"
-            "💡 Un administrateur doit exécuter `/wishlist-setup`.",
+            "⚠️ The wishlist isn't configured on this server yet.\n"
+            "💡 An admin needs to run `/wishlist-setup`.",
             ephemeral=True
         )
         return
@@ -708,11 +708,11 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
         return
 
     if any(i["id"] == item_name for i in user_items):
-        await interaction.response.send_message("⚠️ Cet item est déjà dans ta wishlist.", ephemeral=True)
+        await interaction.response.send_message("⚠️ This item is already in your wishlist.", ephemeral=True)
         return
     if len(user_items) >= limit:
         await interaction.response.send_message(
-            f"❌ Ta wishlist est pleine ({len(user_items)}/{limit}). Retire un item via `/wishlist` avant d'en ajouter un nouveau.",
+            f"❌ Your wishlist is full ({len(user_items)}/{limit}). Remove an item via `/wishlist` before adding a new one.",
             ephemeral=True
         )
         return
@@ -735,7 +735,7 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
     wishlists[user_key] = user_items
     save_guild_config(guild_id, wishlists=wishlists)
     print(f"[WISHLIST ADD] {interaction.user.name} ({interaction.user.id}) → {item.get('name')} ({item.get('id')}) [{len(user_items)}/{limit}]")
-    await interaction.followup.send(f"✅ **{item.get('name')}** ajouté à ta wishlist ({len(user_items)}/{limit}).", ephemeral=True)
+    await interaction.followup.send(f"✅ **{item.get('name')}** added to your wishlist ({len(user_items)}/{limit}).", ephemeral=True)
 
 
 # ── Slash command /wishlist-setup ──────────────────────────────────────────────
@@ -755,27 +755,27 @@ async def wishlist_setup_command(
 ):
     guild_id = interaction.guild_id
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
     if limit is None and role_staff is None and log_channel is None:
-        await interaction.response.send_message("⚠️ Renseigne au moins `limit`, `role_staff` ou `log_channel`.", ephemeral=True)
+        await interaction.response.send_message("⚠️ Provide at least `limit`, `role_staff`, or `log_channel`.", ephemeral=True)
         return
 
     updates = {}
     parts = []
     if limit is not None:
         updates["wishlist_limit"] = limit
-        parts.append(f"Limite → **{limit}** items par membre")
+        parts.append(f"Limit → **{limit}** items per member")
     if role_staff is not None:
         updates["staff_role_id"] = role_staff.id
-        parts.append(f"Rôle staff (`/wishlist-check`, `/wishlist-export`) → {role_staff.mention}")
+        parts.append(f"Staff role (`/wishlist-check`, `/wishlist-export`) → {role_staff.mention}")
     if log_channel is not None:
         updates["log_channel_id"] = log_channel.id
-        parts.append(f"Salon de log du nettoyage auto → {log_channel.mention}")
+        parts.append(f"Auto-cleanup log channel → {log_channel.mention}")
 
     save_guild_config(guild_id, **updates)
     print(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
-    await interaction.response.send_message("✅ Configuré : " + " · ".join(parts), ephemeral=True)
+    await interaction.response.send_message("✅ Configured: " + " · ".join(parts), ephemeral=True)
 
 
 # ── Slash command /wishlist-check ──────────────────────────────────────────────
@@ -785,20 +785,20 @@ async def wishlist_setup_command(
 async def wishlist_check_command(interaction: discord.Interaction, item_name: str):
     guild_id = interaction.guild_id
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     config = load_guild_config(guild_id)
     staff_role_id = config.get("staff_role_id")
     if not staff_role_id:
         await interaction.response.send_message(
-            "⚠️ Le rôle staff n'est pas encore configuré sur ce serveur.\n"
-            "💡 Un administrateur doit exécuter `/wishlist-setup role_staff:<rôle>`.",
+            "⚠️ The staff role isn't configured on this server yet.\n"
+            "💡 An admin needs to run `/wishlist-setup role_staff:<role>`.",
             ephemeral=True
         )
         return
     if not has_role(interaction.user, staff_role_id):
-        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
 
     wishlists = config.get("wishlists", {})
@@ -812,15 +812,15 @@ async def wishlist_check_command(interaction: discord.Interaction, item_name: st
             interested.append(member.mention if member else f"<@{user_id_str}>")
 
     if not interested:
-        await interaction.response.send_message(f"📭 Personne n'a cet item dans sa wishlist.")
+        await interaction.response.send_message("📭 No one has this item in their wishlist.")
         return
 
     embed = discord.Embed(
-        title=f"🔍 Intéressés par : {item_display_name}",
+        title=f"🔍 Interested in: {item_display_name}",
         description="\n".join(interested),
         color=0x5865F2
     )
-    print(f"[WISHLIST CHECK] {interaction.user.name} ({interaction.user.id}) → {item_display_name} ({len(interested)} intéressé(s))")
+    print(f"[WISHLIST CHECK] {interaction.user.name} ({interaction.user.id}) → {item_display_name} ({len(interested)} interested)")
     await interaction.response.send_message(embed=embed)
 
 
@@ -851,20 +851,20 @@ async def wishlist_check_autocomplete(
 async def wishlist_export_command(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     config = load_guild_config(guild_id)
     staff_role_id = config.get("staff_role_id")
     if not staff_role_id:
         await interaction.response.send_message(
-            "⚠️ Le rôle staff n'est pas encore configuré sur ce serveur.\n"
-            "💡 Un administrateur doit exécuter `/wishlist-setup role_staff:<rôle>`.",
+            "⚠️ The staff role isn't configured on this server yet.\n"
+            "💡 An admin needs to run `/wishlist-setup role_staff:<role>`.",
             ephemeral=True
         )
         return
     if not has_role(interaction.user, staff_role_id):
-        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
 
     wishlists = config.get("wishlists", {})
@@ -877,11 +877,11 @@ async def wishlist_export_command(interaction: discord.Interaction):
     entries.sort(key=lambda e: e[0].lower())
 
     if not entries:
-        await interaction.response.send_message("📭 Aucune wishlist enregistrée sur ce serveur.")
+        await interaction.response.send_message("📭 No wishlists recorded on this server.")
         return
 
     embeds = build_wishlist_export_embeds(entries)
-    print(f"[WISHLIST EXPORT] {interaction.user.name} ({interaction.user.id}) → {len(entries)} membre(s), {len(embeds)} embed(s)")
+    print(f"[WISHLIST EXPORT] {interaction.user.name} ({interaction.user.id}) → {len(entries)} member(s), {len(embeds)} embed(s)")
 
     await interaction.response.send_message(
         embeds=embeds[:EMBEDS_PER_MESSAGE], view=WishlistExportView(guild_id)
@@ -896,20 +896,20 @@ async def wishlist_export_command(interaction: discord.Interaction):
 async def wishlist_clean_command(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     if not guild_id:
-        await interaction.response.send_message("❌ Cette commande n'est utilisable que sur un serveur.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     config = load_guild_config(guild_id)
     staff_role_id = config.get("staff_role_id")
     if not staff_role_id:
         await interaction.response.send_message(
-            "⚠️ Le rôle staff n'est pas encore configuré sur ce serveur.\n"
-            "💡 Un administrateur doit exécuter `/wishlist-setup role_staff:<rôle>`.",
+            "⚠️ The staff role isn't configured on this server yet.\n"
+            "💡 An admin needs to run `/wishlist-setup role_staff:<role>`.",
             ephemeral=True
         )
         return
     if not has_role(interaction.user, staff_role_id):
-        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -917,7 +917,7 @@ async def wishlist_clean_command(interaction: discord.Interaction):
     print(f"[WISHLIST CLEAN] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} removed={len(removed)}: {removed}")
 
     if not removed:
-        await interaction.followup.send("🧹 Nettoyage effectué : aucun membre parti trouvé.", ephemeral=True)
+        await interaction.followup.send("🧹 Cleanup complete: no departed members found.", ephemeral=True)
         return
 
     await interaction.followup.send(embed=build_wishlist_clean_embed(removed), ephemeral=True)
