@@ -277,6 +277,76 @@ class LootView(discord.ui.View):
     async def alt_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "alt")
 
+    @discord.ui.button(label="Distributed", style=discord.ButtonStyle.gray, emoji="📦", custom_id="loot_distributed")
+    async def distributed_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id = interaction.guild_id
+        config = load_guild_config(guild_id) if guild_id else {}
+        command_role_id = config.get("command_role_id")
+        if not command_role_id or not has_role(interaction.user, command_role_id):
+            await interaction.response.send_message(
+                "❌ You don't have permission to mark loot as distributed.", ephemeral=True
+            )
+            return
+
+        log_channel_id = config.get("loot_log_channel_id")
+        if not log_channel_id:
+            await interaction.response.send_message(
+                "⚠️ No distribution log channel is configured on this server.\n"
+                "💡 An admin needs to run `/item-setup log_channel:<channel>`.",
+                ephemeral=True
+            )
+            return
+
+        item_embed = interaction.message.embeds[0]
+        item_name = item_embed.title or "Unknown item"
+        item_url = item_embed.url
+        item_thumbnail = item_embed.thumbnail.url if item_embed.thumbnail else None
+
+        view = LootDistributeView(guild_id, interaction.message, item_name, item_url, item_thumbnail)
+        await interaction.response.send_message(f"Who received **{item_name}**?", view=view, ephemeral=True)
+
+
+class LootDistributeView(discord.ui.View):
+    def __init__(self, guild_id: int, source_message: discord.Message, item_name: str, item_url: str | None, item_thumbnail: str | None):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.source_message = source_message
+        self.item_name = item_name
+        self.item_url = item_url
+        self.item_thumbnail = item_thumbnail
+
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Who received this item?", min_values=1, max_values=1)
+    async def select_recipient(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        recipient = select.values[0]
+
+        log_channel_id = load_guild_config(self.guild_id).get("loot_log_channel_id")
+        channel = interaction.guild.get_channel(log_channel_id) if log_channel_id else None
+        if channel is None:
+            await interaction.response.edit_message(
+                content="⚠️ The configured distribution log channel could not be found (maybe it was deleted?). Nothing was changed.",
+                view=None
+            )
+            return
+
+        embed = discord.Embed(title="📦 Loot Distributed", url=self.item_url, color=0x5865F2)
+        embed.add_field(name="Item", value=self.item_name, inline=False)
+        embed.add_field(name="Distributed to", value=recipient.mention, inline=True)
+        embed.add_field(name="Distributed by", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Date", value=f"<t:{int(time.time())}:F>", inline=False)
+        if self.item_thumbnail:
+            embed.set_thumbnail(url=self.item_thumbnail)
+        await channel.send(embed=embed)
+
+        try:
+            await self.source_message.delete()
+        except discord.HTTPException as e:
+            print(f"Warning: could not delete loot message {self.source_message.id}: {e}")
+
+        print(f"[LOOT DISTRIBUTE] {interaction.user.name} ({interaction.user.id}) → {self.item_name} to {recipient.name} ({recipient.id})")
+        await interaction.response.edit_message(
+            content=f"✅ Marked **{self.item_name}** as distributed to {recipient.mention}.", view=None
+        )
+
 
 # ── Wishlist ───────────────────────────────────────────────────────────────────
 
@@ -658,24 +728,42 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
 
 # ── Slash command /item-setup ─────────────────────────────────────────────────
 
-@tree.command(name="item-setup", description="Configure the roles allowed to use /item-loot (admin only)")
+@tree.command(name="item-setup", description="Configure roles and/or the distribution log channel for /item-loot (admin only)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    command_role="Role allowed to run /item-loot",
-    button_role="Role allowed to click the loot buttons"
+    command_role="Role allowed to run /item-loot and mark items as distributed",
+    button_role="Role allowed to click the loot sign-up buttons",
+    log_channel="Channel where loot distribution reports are posted"
 )
-async def item_setup_command(interaction: discord.Interaction, command_role: discord.Role, button_role: discord.Role):
+async def item_setup_command(
+    interaction: discord.Interaction,
+    command_role: discord.Role = None,
+    button_role: discord.Role = None,
+    log_channel: discord.TextChannel = None
+):
     guild_id = interaction.guild_id
     if not guild_id:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
+    if command_role is None and button_role is None and log_channel is None:
+        await interaction.response.send_message("⚠️ Provide at least `command_role`, `button_role`, or `log_channel`.", ephemeral=True)
+        return
 
-    save_guild_config(guild_id, command_role_id=command_role.id, button_role_id=button_role.id)
-    print(f"[SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} command_role={command_role.id} button_role={button_role.id}")
-    await interaction.response.send_message(
-        f"✅ Configured: `/item-loot` → {command_role.mention} · Buttons → {button_role.mention}",
-        ephemeral=True
-    )
+    updates = {}
+    parts = []
+    if command_role is not None:
+        updates["command_role_id"] = command_role.id
+        parts.append(f"Command role (`/item-loot`, Distributed button) → {command_role.mention}")
+    if button_role is not None:
+        updates["button_role_id"] = button_role.id
+        parts.append(f"Sign-up buttons role → {button_role.mention}")
+    if log_channel is not None:
+        updates["loot_log_channel_id"] = log_channel.id
+        parts.append(f"Distribution log channel → {log_channel.mention}")
+
+    save_guild_config(guild_id, **updates)
+    print(f"[ITEM SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
+    await interaction.response.send_message("✅ Configured: " + " · ".join(parts), ephemeral=True)
 
 
 # ── Slash command /wishlist ────────────────────────────────────────────────────
