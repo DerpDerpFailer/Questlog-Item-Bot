@@ -26,6 +26,7 @@ LOOT_CATEGORIES = [
     ("pvp", "Main PvP", "loot_pvp"),
     ("pve", "Main PvE", "loot_pve"),
     ("alt", "Alternate Build", "loot_alt"),
+    ("greed", "Greed", "loot_greed"),
 ]
 
 # Grade → rarity label + color
@@ -276,6 +277,10 @@ class LootView(discord.ui.View):
     @discord.ui.button(label="Alternate Build", style=discord.ButtonStyle.secondary, custom_id="loot_alt")
     async def alt_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "alt")
+
+    @discord.ui.button(label="Greed", style=discord.ButtonStyle.danger, custom_id="loot_greed")
+    async def greed_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "greed")
 
     @discord.ui.button(label="Distributed", style=discord.ButtonStyle.gray, emoji="📦", custom_id="loot_distributed")
     async def distributed_button(self, interaction: discord.Interaction, button: discord.ui.Button):
