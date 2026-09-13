@@ -344,13 +344,48 @@ class LootDistributeView(discord.ui.View):
     @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Who received this item?", min_values=1, max_values=1)
     async def select_recipient(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         recipient = select.values[0]
+        modal = LootNoteModal(
+            self.guild_id, self.source_message, self.item_name, self.item_url, self.item_id,
+            self.item_thumbnail, recipient
+        )
+        await interaction.response.send_modal(modal)
 
+
+class LootNoteModal(discord.ui.Modal):
+    note = discord.ui.TextInput(
+        label="Note (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+        placeholder="e.g. rolled highest, traded for materials, ..."
+    )
+
+    def __init__(
+        self,
+        guild_id: int,
+        source_message: discord.Message,
+        item_name: str,
+        item_url: str | None,
+        item_id: str | None,
+        item_thumbnail: str | None,
+        recipient: discord.abc.User
+    ):
+        super().__init__(title=f"Distribute: {item_name}"[:45])
+        self.guild_id = guild_id
+        self.source_message = source_message
+        self.item_name = item_name
+        self.item_url = item_url
+        self.item_id = item_id
+        self.item_thumbnail = item_thumbnail
+        self.recipient = recipient
+
+    async def on_submit(self, interaction: discord.Interaction):
         log_channel_id = load_guild_config(self.guild_id).get("loot_log_channel_id")
         channel = interaction.guild.get_channel(log_channel_id) if log_channel_id else None
         if channel is None:
-            await interaction.response.edit_message(
-                content="⚠️ The configured distribution log channel could not be found (maybe it was deleted?). Nothing was changed.",
-                view=None
+            await interaction.response.send_message(
+                "⚠️ The configured distribution log channel could not be found (maybe it was deleted?). Nothing was changed.",
+                ephemeral=True
             )
             return
 
@@ -361,9 +396,11 @@ class LootDistributeView(discord.ui.View):
 
         embed = discord.Embed(title="📦 Loot Distributed", url=self.item_url, color=0x5865F2)
         embed.add_field(name="Item", value=self.item_name, inline=False)
-        embed.add_field(name="Distributed to", value=recipient.mention, inline=True)
+        embed.add_field(name="Distributed to", value=self.recipient.mention, inline=True)
         embed.add_field(name="Distributed by", value=interaction.user.mention, inline=True)
         embed.add_field(name="Current Price", value=format_current_price(ah), inline=True)
+        if self.note.value:
+            embed.add_field(name="Note", value=self.note.value, inline=False)
         embed.add_field(name="Date", value=f"<t:{int(time.time())}:F>", inline=False)
         if self.item_thumbnail:
             embed.set_thumbnail(url=self.item_thumbnail)
@@ -376,9 +413,13 @@ class LootDistributeView(discord.ui.View):
             delete_failed = True
             print(f"Warning: could not delete loot message {self.source_message.id}: {e}")
 
-        print(f"[LOOT DISTRIBUTE] {interaction.user.name} ({interaction.user.id}) → {self.item_name} to {recipient.name} ({recipient.id})")
+        note_suffix = f" note={self.note.value!r}" if self.note.value else ""
+        print(
+            f"[LOOT DISTRIBUTE] {interaction.user.name} ({interaction.user.id}) → "
+            f"{self.item_name} to {self.recipient.name} ({self.recipient.id}){note_suffix}"
+        )
 
-        confirmation = f"✅ Marked **{self.item_name}** as distributed to {recipient.mention}."
+        confirmation = f"✅ Marked **{self.item_name}** as distributed to {self.recipient.mention}."
         if delete_failed:
             confirmation += (
                 "\n⚠️ Couldn't delete the original loot post — the bot may be missing permissions "
