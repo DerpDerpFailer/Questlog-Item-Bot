@@ -300,19 +300,40 @@ class LootView(discord.ui.View):
         item_embed = interaction.message.embeds[0]
         item_name = item_embed.title or "Unknown item"
         item_url = item_embed.url
+        item_id = item_url.rsplit("/", 1)[-1] if item_url else None
         item_thumbnail = item_embed.thumbnail.url if item_embed.thumbnail else None
 
-        view = LootDistributeView(guild_id, interaction.message, item_name, item_url, item_thumbnail)
+        view = LootDistributeView(guild_id, interaction.message, item_name, item_url, item_id, item_thumbnail)
         await interaction.response.send_message(f"Who received **{item_name}**?", view=view, ephemeral=True)
 
 
+def format_current_price(ah: dict | str | None) -> str:
+    if ah and ah != "timeout" and ah.get("inStock", 0) > 0:
+        price_fmt = f"{ah['minPrice']:,}".replace(",", " ")
+        return f"{price_fmt} ◈ (×{ah['inStock']} in stock)"
+    if ah == "timeout":
+        return "Unavailable"
+    if ah is not None:
+        return "Not listed"
+    return "Unavailable"
+
+
 class LootDistributeView(discord.ui.View):
-    def __init__(self, guild_id: int, source_message: discord.Message, item_name: str, item_url: str | None, item_thumbnail: str | None):
+    def __init__(
+        self,
+        guild_id: int,
+        source_message: discord.Message,
+        item_name: str,
+        item_url: str | None,
+        item_id: str | None,
+        item_thumbnail: str | None
+    ):
         super().__init__(timeout=300)
         self.guild_id = guild_id
         self.source_message = source_message
         self.item_name = item_name
         self.item_url = item_url
+        self.item_id = item_id
         self.item_thumbnail = item_thumbnail
 
     @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Who received this item?", min_values=1, max_values=1)
@@ -328,24 +349,37 @@ class LootDistributeView(discord.ui.View):
             )
             return
 
+        ah = None
+        if self.item_id:
+            loop = asyncio.get_event_loop()
+            ah = await loop.run_in_executor(None, fetch_ah_price, self.item_id)
+
         embed = discord.Embed(title="📦 Loot Distributed", url=self.item_url, color=0x5865F2)
         embed.add_field(name="Item", value=self.item_name, inline=False)
         embed.add_field(name="Distributed to", value=recipient.mention, inline=True)
         embed.add_field(name="Distributed by", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Current Price", value=format_current_price(ah), inline=True)
         embed.add_field(name="Date", value=f"<t:{int(time.time())}:F>", inline=False)
         if self.item_thumbnail:
             embed.set_thumbnail(url=self.item_thumbnail)
         await channel.send(embed=embed)
 
+        delete_failed = False
         try:
             await self.source_message.delete()
         except discord.HTTPException as e:
+            delete_failed = True
             print(f"Warning: could not delete loot message {self.source_message.id}: {e}")
 
         print(f"[LOOT DISTRIBUTE] {interaction.user.name} ({interaction.user.id}) → {self.item_name} to {recipient.name} ({recipient.id})")
-        await interaction.response.edit_message(
-            content=f"✅ Marked **{self.item_name}** as distributed to {recipient.mention}.", view=None
-        )
+
+        confirmation = f"✅ Marked **{self.item_name}** as distributed to {recipient.mention}."
+        if delete_failed:
+            confirmation += (
+                "\n⚠️ Couldn't delete the original loot post — the bot may be missing permissions "
+                "in that channel. Please remove it manually."
+            )
+        await interaction.response.edit_message(content=confirmation, view=None)
 
 
 # ── Wishlist ───────────────────────────────────────────────────────────────────
