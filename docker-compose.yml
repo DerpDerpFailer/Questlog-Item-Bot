@@ -8,4 +8,7 @@ services:
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
     volumes:
-      - ./data:/app/data
+      - questlog-data:/app/data
+
+volumes:
+  questlog-data:

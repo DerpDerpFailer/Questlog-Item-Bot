@@ -41,6 +41,28 @@ Dependencies are pinned in `requirements.txt`; bump them deliberately and run th
 | `/wishlist-export` | Staff only — view every member's wishlist on this server, with a button to export as CSV |
 | `/wishlist-clean` | Staff only — remove wishlists belonging to members who left the server (also runs automatically every week, optionally reported to `log_channel`) |
 
+## 💾 Data, backup & restore
+
+Per-server settings (roles, log channels, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`). Loot sign-ups are **not** stored there: they live in the Discord messages themselves.
+
+**Back up** — Portainer → Containers → `questlog-bot` → Console → `/bin/sh`, then save the output:
+
+```bash
+for f in /app/data/*.json; do echo "== $f"; cat "$f"; echo; done
+```
+
+**Restore** — same Console, paste the saved JSON into a heredoc (the bot re-reads the file on every access, no restart needed):
+
+```bash
+cat > /app/data/<guild_id>.json << 'EOF'
+<paste the saved JSON here>
+EOF
+```
+
+With a shell on the Docker host, `docker cp questlog-bot:/app/data ./backup` and `docker cp ./backup/. questlog-bot:/app/data/` do the same.
+
+**Upgrading from the old `./data` bind mount:** the named volume starts empty and Docker does not copy the old directory. Back up first, redeploy, then restore. Until restored, the sign-up buttons refuse clicks and `/item-loot` is blocked; re-running `/item-setup` is the fallback. The old directory is left untouched on the host.
+
 ## 🧪 Tests
 
 Run the suite inside the same image the bot ships in (pytest is not part of the production image):
