@@ -19,6 +19,7 @@ BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
 
 API_TIMEOUT = 8          # seconds before questlog times out
 STAT_FORMAT_TTL = 86400  # 24h in seconds
+STAT_FORMAT_RETRY = 300  # seconds before retrying a failed stat-format refresh
 DATA_DIR = "data"
 
 EMBED_MAX_CHARS = 5900   # margin under Discord's 6000-character-per-embed limit
@@ -47,6 +48,9 @@ GRADE_CONFIG = {
 # Stat formats cache
 _stat_formats: dict = {}
 _stat_formats_loaded_at: float = 0.0
+_stat_formats_attempted_at: float = 0.0
+_stat_formats_refreshing: bool = False
+_stat_formats_lock = threading.Lock()
 
 
 def load_stat_formats() -> None:
@@ -66,10 +70,29 @@ def load_stat_formats() -> None:
         print(f"Warning: could not load stat formats: {e}")
 
 
-def get_stat_formats() -> dict:
-    """Return stat formats, reloading if older than 24h."""
-    if time.time() - _stat_formats_loaded_at > STAT_FORMAT_TTL:
+def _refresh_stat_formats_in_background() -> None:
+    global _stat_formats_refreshing
+    try:
         load_stat_formats()
+    finally:
+        with _stat_formats_lock:
+            _stat_formats_refreshing = False
+
+
+def get_stat_formats() -> dict:
+    """Never blocks: called from async handlers, where a slow questlog.gg would otherwise
+    freeze the whole bot for up to API_TIMEOUT seconds. When the formats are older than 24h
+    the stale ones keep being served while one background thread refreshes them; a failed
+    refresh is retried after STAT_FORMAT_RETRY seconds instead of on every call."""
+    global _stat_formats_refreshing, _stat_formats_attempted_at
+    now = time.time()
+    stale = now - _stat_formats_loaded_at > STAT_FORMAT_TTL
+    if stale and now - _stat_formats_attempted_at > STAT_FORMAT_RETRY:
+        with _stat_formats_lock:
+            if not _stat_formats_refreshing:
+                _stat_formats_refreshing = True
+                _stat_formats_attempted_at = now
+                threading.Thread(target=_refresh_stat_formats_in_background, daemon=True).start()
     return _stat_formats
 
 
