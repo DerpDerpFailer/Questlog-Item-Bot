@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   questlog-bot:
     build: .
@@ -9,6 +7,11 @@ services:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
     volumes:
       - questlog-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   questlog-data:
