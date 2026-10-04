@@ -131,10 +131,22 @@ tree = app_commands.CommandTree(client)
 # ── Error reporting ───────────────────────────────────────────────────────────
 
 GENERIC_ERROR_MESSAGE = "❌ Something went wrong. Please try again, and tell an admin if it keeps happening."
+ADMIN_REQUIRED_MESSAGE = "❌ This command requires the Administrator permission."
 FORBIDDEN_ERROR_MESSAGE = (
     "❌ The bot is missing permissions for this action. "
     "An admin should check its permissions on the channel involved."
 )
+
+
+async def reply_ephemeral(interaction: discord.Interaction, message: str) -> None:
+    """Initial response or followup depending on is_done(); never raises."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException as e:
+        print(f"Warning: could not deliver the error message: {e}")
 
 
 async def report_interaction_error(interaction: discord.Interaction, source: str, error: Exception) -> None:
@@ -143,13 +155,7 @@ async def report_interaction_error(interaction: discord.Interaction, source: str
     print(f"ERROR in {source} (guild={interaction.guild_id}, user={interaction.user.id})")
     traceback.print_exception(type(error), error, error.__traceback__)
     message = FORBIDDEN_ERROR_MESSAGE if isinstance(error, discord.Forbidden) else GENERIC_ERROR_MESSAGE
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-    except discord.HTTPException as e:
-        print(f"Warning: could not deliver the error message: {e}")
+    await reply_ephemeral(interaction, message)
 
 
 class ErrorReportingView(discord.ui.View):
@@ -165,6 +171,13 @@ class ErrorReportingModal(discord.ui.Modal):
 @tree.error
 async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     command = f"/{interaction.command.name}" if interaction.command else "command tree"
+    if isinstance(error, app_commands.MissingPermissions):
+        print(
+            f"[DENIED] {interaction.user.name} ({interaction.user.id}) → {command} "
+            f"(guild={interaction.guild_id}, missing: {', '.join(error.missing_permissions)})"
+        )
+        await reply_ephemeral(interaction, ADMIN_REQUIRED_MESSAGE)
+        return
     await report_interaction_error(interaction, command, getattr(error, "original", error))
 
 
@@ -1026,6 +1039,7 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
 
 @tree.command(name="item-setup", description="Configure roles and/or the distribution log channel for /item-loot (admin only)")
 @app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(
     command_role="Role allowed to run /item-loot and mark items as distributed",
     button_role="Role allowed to click the loot sign-up buttons",
@@ -1141,6 +1155,7 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
 
 @tree.command(name="wishlist-setup", description="Configure the wishlist size limit, staff role and/or cleanup log channel (admin only)")
 @app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(
     limit="Maximum number of items each member can have in their wishlist (1-25)",
     role_staff="Role allowed to use /wishlist-check and /wishlist-export",
