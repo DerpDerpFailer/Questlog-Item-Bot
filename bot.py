@@ -134,23 +134,68 @@ def _guild_config_path(guild_id: int) -> str:
 
 
 def load_guild_config(guild_id: int) -> dict:
+    """Read-only I/O errors propagate on purpose: returning {} would make the next
+    save overwrite the real config. A corrupt file is quarantined instead of lost."""
     path = _guild_config_path(guild_id)
     if not os.path.exists(path):
         return {}
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
-        print(f"Warning: could not read guild config {guild_id}: {e}")
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        quarantine = f"{path}.corrupt-{int(time.time())}"
+        os.replace(path, quarantine)
+        print(f"ERROR: guild config {guild_id} is corrupt ({e}); moved to {quarantine}, starting from an empty config")
         return {}
+
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def save_guild_config(guild_id: int, **updates) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     config = load_guild_config(guild_id)
     config.update(updates)
-    with open(_guild_config_path(guild_id), "w") as f:
-        json.dump(config, f, indent=2)
+    _write_json_atomic(_guild_config_path(guild_id), config)
+
+
+def try_add_wishlist_item(guild_id: int, user_id: int, item_id: str, item_name: str) -> tuple[str, int]:
+    """Race-safe add: re-reads the config right before writing and contains no await,
+    so concurrent /wishlist calls can't overwrite each other.
+    Returns (status, count) with status in {"added", "duplicate", "full", "unconfigured"}."""
+    config = load_guild_config(guild_id)
+    limit = config.get("wishlist_limit")
+    if not limit:
+        return "unconfigured", 0
+    wishlists = config.get("wishlists", {})
+    user_items = wishlists.get(str(user_id), [])
+    if any(i["id"] == item_id for i in user_items):
+        return "duplicate", len(user_items)
+    if len(user_items) >= limit:
+        return "full", len(user_items)
+    user_items.append({"id": item_id, "name": item_name})
+    wishlists[str(user_id)] = user_items
+    save_guild_config(guild_id, wishlists=wishlists)
+    return "added", len(user_items)
+
+
+def remove_wishlist_entries(guild_id: int, user_ids: list[str]) -> None:
+    """Delta-based removal on a fresh read, for callers that awaited since their last read."""
+    wishlists = load_guild_config(guild_id).get("wishlists", {})
+    for user_id in user_ids:
+        wishlists.pop(user_id, None)
+    save_guild_config(guild_id, wishlists=wishlists)
 
 
 def has_role(member: discord.abc.User, role_id: int) -> bool:
@@ -174,8 +219,7 @@ async def clean_guild_wishlists(guild: discord.Guild) -> list[tuple[str, str]]:
     Only removes on a confirmed 404 (member truly gone) — any other API error
     leaves the entry untouched to avoid false positives from transient issues.
     Returns a list of (user_id, name) for the entries removed."""
-    config = load_guild_config(guild.id)
-    wishlists = config.get("wishlists", {})
+    wishlists = load_guild_config(guild.id).get("wishlists", {})
     if not wishlists:
         return []
 
@@ -192,14 +236,13 @@ async def clean_guild_wishlists(guild: discord.Guild) -> list[tuple[str, str]]:
                 name = user.name
             except discord.HTTPException:
                 pass
-            del wishlists[user_id_str]
             removed.append((user_id_str, name))
         except discord.HTTPException as e:
             print(f"Warning: could not verify member {user_id_str} in guild {guild.id}: {e}")
         await asyncio.sleep(0.5)
 
     if removed:
-        save_guild_config(guild.id, wishlists=wishlists)
+        remove_wishlist_entries(guild.id, [user_id for user_id, _ in removed])
     return removed
 
 
@@ -899,11 +942,26 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
         )
         return
 
-    user_items.append({"id": item.get("id"), "name": item.get("name")})
-    wishlists[user_key] = user_items
-    save_guild_config(guild_id, wishlists=wishlists)
-    print(f"[WISHLIST ADD] {interaction.user.name} ({interaction.user.id}) → {item.get('name')} ({item.get('id')}) [{len(user_items)}/{limit}]")
-    await interaction.followup.send(f"✅ **{item.get('name')}** added to your wishlist ({len(user_items)}/{limit}).", ephemeral=True)
+    status, count = try_add_wishlist_item(guild_id, interaction.user.id, item.get("id"), item.get("name"))
+    if status == "duplicate":
+        await interaction.followup.send("⚠️ This item is already in your wishlist.", ephemeral=True)
+        return
+    if status == "full":
+        await interaction.followup.send(
+            f"❌ Your wishlist is full ({count}/{limit}). Remove an item via `/wishlist` before adding a new one.",
+            ephemeral=True
+        )
+        return
+    if status == "unconfigured":
+        await interaction.followup.send(
+            "⚠️ The wishlist isn't configured on this server yet.\n"
+            "💡 An admin needs to run `/wishlist-setup`.",
+            ephemeral=True
+        )
+        return
+
+    print(f"[WISHLIST ADD] {interaction.user.name} ({interaction.user.id}) → {item.get('name')} ({item.get('id')}) [{count}/{limit}]")
+    await interaction.followup.send(f"✅ **{item.get('name')}** added to your wishlist ({count}/{limit}).", ephemeral=True)
 
 
 # ── Slash command /wishlist-setup ──────────────────────────────────────────────

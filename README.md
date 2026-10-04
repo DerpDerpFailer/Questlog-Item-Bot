@@ -38,6 +38,15 @@ docker compose up -d
 | `/wishlist-export` | Staff only — view every member's wishlist on this server, with a button to export as CSV |
 | `/wishlist-clean` | Staff only — remove wishlists belonging to members who left the server (also runs automatically every week, optionally reported to `log_channel`) |
 
+## 🧪 Tests
+
+Run the suite inside the same image the bot ships in (pytest is not part of the production image):
+
+```bash
+docker build -t questlog-bot:test .
+docker run --rm --entrypoint sh questlog-bot:test -c "pip install -q -r requirements-dev.txt && python -m pytest"
+```
+
 ## 📡 Data Source
 
 Data from [questlog.gg](https://questlog.gg/throne-and-liberty) (personal use only).
