@@ -5,8 +5,10 @@ import io
 import json
 import time
 import asyncio
+import threading
 import traceback
 from collections import OrderedDict
+from collections.abc import Callable
 import requests
 import discord
 from discord import app_commands
@@ -23,6 +25,8 @@ EMBED_MAX_CHARS = 5900   # margin under Discord's 6000-character-per-embed limit
 EMBED_MAX_FIELDS = 25
 EMBEDS_PER_MESSAGE = 10
 LOOT_STATE_CACHE_SIZE = 500
+SEARCH_CACHE_TTL = 60    # seconds; item names barely change, so this only needs to absorb keystroke bursts
+SEARCH_CACHE_SIZE = 512
 
 LOOT_FIELD_NAME = "🎯 Loot Interest"
 LOOT_CATEGORIES = [
@@ -161,18 +165,63 @@ def api_get(endpoint: str, input_data: dict) -> dict | None:
         return None
 
 
+class TTLCache:
+    """Small cache with per-entry expiry and a bounded size (oldest-used entry evicted first).
+    search_items runs in executor threads, so every access goes through the lock."""
+
+    def __init__(self, ttl: float, max_size: int, clock: Callable[[], float] = time.monotonic) -> None:
+        self._ttl = ttl
+        self._max_size = max_size
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+
+    def get(self, key: str) -> list[dict] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if self._clock() >= expires_at:
+                del self._entries[key]
+                return None
+            self._entries.move_to_end(key)
+            return value
+
+    def set(self, key: str, value: list[dict]) -> None:
+        with self._lock:
+            self._entries[key] = (self._clock() + self._ttl, value)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_size:
+                self._entries.popitem(last=False)
+
+
+_search_cache = TTLCache(SEARCH_CACHE_TTL, SEARCH_CACHE_SIZE)
+
+
 def search_items(query: str) -> list[dict]:
+    """Autocomplete fires on every keystroke and several members often type the same names,
+    so successful lookups are cached. Failures are never cached: a transient API error must
+    not turn into a minute of empty suggestions. The key ignores case and extra spaces, which
+    the questlog search was checked not to care about."""
+    key = " ".join(query.split()).casefold()
+    cached = _search_cache.get(key)
+    if cached is not None:
+        return [dict(item) for item in cached]
+
     data = api_get("database.getItems", {
         "language": "en", "page": 1,
         "searchTerm": query, "mainCategory": "", "subCategory": ""
     })
     if not data or data == "timeout":
         return []
-    return [
+    results = [
         {"id": item["id"], "name": item["name"]}
         for item in data.get("pageData", [])
         if not item.get("isDisabled")
     ][:25]
+    _search_cache.set(key, results)
+    return [dict(item) for item in results]
 
 
 def fetch_item(item_id: str) -> dict | str | None:
