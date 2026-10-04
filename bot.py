@@ -5,6 +5,7 @@ import io
 import json
 import time
 import asyncio
+import traceback
 import requests
 import discord
 from discord import app_commands
@@ -78,9 +79,65 @@ def format_stat(key: str, value: float) -> str:
     return f"{name}: {value_format.replace('{0}', computed_str)}"
 
 
+class QuestlogClient(discord.Client):
+    async def setup_hook(self) -> None:
+        """Runs once per process, before the gateway connects (unlike on_ready, which
+        re-fires after every full reconnect). An exception here would abort startup and
+        crash-loop the container, so the sync stays wrapped."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, load_stat_formats)
+        self.add_view(LootView())
+        weekly_wishlist_cleanup.start()
+        try:
+            synced = await tree.sync()
+            print(f"Synced {len(synced)} command(s)")
+        except Exception as e:
+            print(f"SYNC ERROR: {type(e).__name__}: {e}")
+
+
 intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+client = QuestlogClient(intents=intents)
 tree = app_commands.CommandTree(client)
+
+# ── Error reporting ───────────────────────────────────────────────────────────
+
+GENERIC_ERROR_MESSAGE = "❌ Something went wrong. Please try again, and tell an admin if it keeps happening."
+FORBIDDEN_ERROR_MESSAGE = (
+    "❌ The bot is missing permissions for this action. "
+    "An admin should check its permissions on the channel involved."
+)
+
+
+async def report_interaction_error(interaction: discord.Interaction, source: str, error: Exception) -> None:
+    """Log the traceback to the container logs and tell the user something went wrong.
+    Never raises: a failing error handler would leave the user with no feedback at all."""
+    print(f"ERROR in {source} (guild={interaction.guild_id}, user={interaction.user.id})")
+    traceback.print_exception(type(error), error, error.__traceback__)
+    message = FORBIDDEN_ERROR_MESSAGE if isinstance(error, discord.Forbidden) else GENERIC_ERROR_MESSAGE
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException as e:
+        print(f"Warning: could not deliver the error message: {e}")
+
+
+class ErrorReportingView(discord.ui.View):
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        await report_interaction_error(interaction, type(self).__name__, error)
+
+
+class ErrorReportingModal(discord.ui.Modal):
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        await report_interaction_error(interaction, type(self).__name__, error)
+
+
+@tree.error
+async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    command = f"/{interaction.command.name}" if interaction.command else "command tree"
+    await report_interaction_error(interaction, command, getattr(error, "original", error))
+
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -277,7 +334,7 @@ def parse_loot_field(value: str) -> dict[str, list[int]]:
     return state
 
 
-class LootView(discord.ui.View):
+class LootView(ErrorReportingView):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -366,7 +423,7 @@ def format_current_price(ah: dict | str | None) -> str:
     return "Unavailable"
 
 
-class LootDistributeView(discord.ui.View):
+class LootDistributeView(ErrorReportingView):
     def __init__(
         self,
         guild_id: int,
@@ -394,7 +451,7 @@ class LootDistributeView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 
-class LootNoteModal(discord.ui.Modal):
+class LootNoteModal(ErrorReportingModal):
     note = discord.ui.TextInput(
         label="Note (optional)",
         style=discord.TextStyle.paragraph,
@@ -485,7 +542,7 @@ def build_wishlist_embed(user: discord.abc.User, items: list[dict]) -> discord.E
     return embed
 
 
-class WishlistRemoveView(discord.ui.View):
+class WishlistRemoveView(ErrorReportingView):
     def __init__(self, guild_id: int, user_id: int, items: list[dict]):
         super().__init__(timeout=300)
         self.guild_id = guild_id
@@ -558,7 +615,7 @@ async def build_wishlist_csv(guild: discord.Guild, wishlists: dict) -> discord.F
     return discord.File(io.BytesIO(buf.getvalue().encode("utf-8")), filename="wishlists.csv")
 
 
-class WishlistExportView(discord.ui.View):
+class WishlistExportView(ErrorReportingView):
     def __init__(self, guild_id: int):
         super().__init__(timeout=300)
         self.guild_id = guild_id
@@ -1233,19 +1290,16 @@ async def weekly_wishlist_cleanup():
             print(f"Warning: auto wishlist cleanup failed for guild {guild.id}: {e}")
 
 
+@weekly_wishlist_cleanup.before_loop
+async def wait_for_ready_before_cleanup():
+    # The task is started from setup_hook, before the gateway connects: client.guilds is empty until READY.
+    await client.wait_until_ready()
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @client.event
 async def on_ready():
-    load_stat_formats()
-    client.add_view(LootView())
-    if not weekly_wishlist_cleanup.is_running():
-        weekly_wishlist_cleanup.start()
-    try:
-        synced = await tree.sync()
-        print(f"Synced {len(synced)} command(s)")
-    except Exception as e:
-        print(f"SYNC ERROR: {type(e).__name__}: {e}")
     print(f"Logged in as {client.user}")
 
 
