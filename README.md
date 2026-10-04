@@ -24,6 +24,9 @@ cp .env.example .env
 docker compose up -d
 ```
 
+Under Portainer, skip the `.env` file and set `DISCORD_TOKEN` in the stack's environment variables.
+Dependencies are pinned in `requirements.txt`; bump them deliberately and run the test suite below.
+
 ## 📋 Commands
 
 | Command | Description |
