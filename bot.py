@@ -6,6 +6,7 @@ import json
 import time
 import asyncio
 import traceback
+from collections import OrderedDict
 import requests
 import discord
 from discord import app_commands
@@ -21,6 +22,7 @@ DATA_DIR = "data"
 EMBED_MAX_CHARS = 5900   # margin under Discord's 6000-character-per-embed limit
 EMBED_MAX_FIELDS = 25
 EMBEDS_PER_MESSAGE = 10
+LOOT_STATE_CACHE_SIZE = 500
 
 LOOT_FIELD_NAME = "🎯 Loot Interest"
 LOOT_CATEGORIES = [
@@ -334,6 +336,50 @@ def parse_loot_field(value: str) -> dict[str, list[int]]:
     return state
 
 
+def toggle_loot_signup(state: dict[str, list[int]], user_id: int, category_key: str) -> dict[str, list[int]]:
+    """Exclusive choice with toggle-off on re-click. Returns a new dict, never mutates `state`."""
+    already_in = user_id in state[category_key]
+    new_state = {key: [i for i in ids if i != user_id] for key, ids in state.items()}
+    if not already_in:
+        new_state[category_key].append(user_id)
+    return new_state
+
+
+class LootEntry:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.state: dict[str, list[int]] | None = None
+
+
+class LootStateStore:
+    """Authoritative sign-up state per loot message, plus one lock per message.
+
+    A click's payload carries the message as it was when the click happened, so two
+    near-simultaneous clicks start from the same stale snapshot and the second edit erases
+    the first. Serializing on this state fixes that without fetching the message (which
+    would need channel permissions the interaction flow doesn't). After a restart the cache
+    is empty and the first click falls back to the state parsed from the embed."""
+
+    def __init__(self, max_size: int = LOOT_STATE_CACHE_SIZE) -> None:
+        self._max_size = max_size
+        self._entries: OrderedDict[int, LootEntry] = OrderedDict()
+
+    def entry(self, message_id: int) -> LootEntry:
+        entry = self._entries.get(message_id)
+        if entry is None:
+            entry = self._entries[message_id] = LootEntry()
+        self._entries.move_to_end(message_id)
+        while len(self._entries) > self._max_size:
+            oldest_id, oldest = next(iter(self._entries.items()))
+            if oldest.lock.locked():
+                break
+            del self._entries[oldest_id]
+        return entry
+
+
+LOOT_STATES = LootStateStore()
+
+
 class LootView(ErrorReportingView):
     def __init__(self):
         super().__init__(timeout=None)
@@ -354,17 +400,15 @@ class LootView(ErrorReportingView):
             await interaction.response.send_message("❌ Internal error: loot field not found.", ephemeral=True)
             return
 
-        state = parse_loot_field(embed.fields[field_index].value)
-        user_id = interaction.user.id
-        already_in = user_id in state[category_key]
-        for key in state:
-            if user_id in state[key]:
-                state[key].remove(user_id)
-        if not already_in:
-            state[category_key].append(user_id)
-
-        embed.set_field_at(field_index, name=LOOT_FIELD_NAME, value=format_loot_field(state), inline=False)
-        await interaction.response.edit_message(embed=embed, view=self)
+        # Acknowledge right away: clicks queue on the per-message lock and must not hit Discord's 3s limit.
+        await interaction.response.defer()
+        entry = LOOT_STATES.entry(interaction.message.id)
+        async with entry.lock:
+            current = entry.state if entry.state is not None else parse_loot_field(embed.fields[field_index].value)
+            new_state = toggle_loot_signup(current, interaction.user.id, category_key)
+            embed.set_field_at(field_index, name=LOOT_FIELD_NAME, value=format_loot_field(new_state), inline=False)
+            await interaction.edit_original_response(embed=embed, view=self)
+            entry.state = new_state
 
     @discord.ui.button(label="Main PvP", style=discord.ButtonStyle.primary, custom_id="loot_pvp")
     async def pvp_button(self, interaction: discord.Interaction, button: discord.ui.Button):
