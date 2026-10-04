@@ -264,11 +264,55 @@ def fetch_item(item_id: str) -> dict | str | None:
     return api_get("database.getItem", {"id": item_id, "language": "en"})
 
 
-def fetch_ah_price(item_id: str) -> dict | str | None:
-    return api_get("auctionHouse.getAuctionItem", {
-        "language": "en", "regionId": "eu-f",
-        "itemId": item_id, "timespan": 360
+AH_REGION = "eu-f"
+
+
+def fetch_market(auction_house_id: int | None) -> dict | str | None:
+    """Current price of an item in AH_REGION, as {"minPrice": int | None, "inStock": int}.
+    questlog.gg indexes the auction house by the item's auctionHouseId (not its id), and
+    answers 400 for a null one, so items that can't be traded never reach the API.
+    Returns None / "timeout" like api_get when the lookup failed."""
+    if auction_house_id is None:
+        return {"minPrice": None, "inStock": 0}
+    data = api_get("auctionHouse.getItemMarket", {
+        "auctionHouseId": auction_house_id, "potentialAbilityId": None
     })
+    if data is None or data == "timeout":
+        return data
+    current = (data.get("current") or {}).get(AH_REGION) or {}
+    return {"minPrice": current.get("minPrice"), "inStock": current.get("inStock") or 0}
+
+
+def fetch_market_for_item(item_id: str) -> dict | str | None:
+    """Blocking helper for callers that only know the item id: resolve its auctionHouseId, then its price."""
+    item = fetch_item(item_id)
+    if not isinstance(item, dict):
+        return item
+    return fetch_market(item.get("auctionHouseId"))
+
+
+def fetch_price_history(auction_house_id: int, days: int, now_ms: float | None = None) -> list[dict] | str | None:
+    """Price points for the last `days` days in AH_REGION, oldest first. Only periods that had
+    offers are present. Each raw point is [time_ms, min, max, avg, last, in_stock], where the
+    prices are the floor price sampled during that period.
+
+    The hourly ranges (7d, 30d, 90d) are all capped at 168 points, i.e. the last 7 days, so
+    anything longer is read from the daily "all" series and cut to the requested window."""
+    range_name = "7d" if days <= 7 else "all"
+    data = api_get("auctionHouse.getItemHistory", {
+        "auctionHouseId": auction_house_id, "potentialAbilityId": None, "range": range_name
+    })
+    if data is None or data == "timeout":
+        return data
+    raw = (data.get("series") or {}).get(AH_REGION) or []
+    points = [
+        {"time": p[0], "min": p[1], "max": p[2], "avg": p[3], "last": p[4], "stock": p[5]}
+        for p in raw if p and p[1] is not None
+    ]
+    if range_name == "all":
+        cutoff = (time.time() * 1000 if now_ms is None else now_ms) - days * 86_400_000
+        points = [point for point in points if point["time"] >= cutoff]
+    return sorted(points, key=lambda point: point["time"])
 
 
 # ── Guild config (per-server role restrictions for /item-loot) ────────────────
@@ -541,13 +585,15 @@ class LootView(ErrorReportingView):
         await interaction.response.send_message(f"Who received **{item_name}**?", view=view, ephemeral=True)
 
 
+def is_listed(ah: dict | str | None) -> bool:
+    return isinstance(ah, dict) and ah.get("inStock", 0) > 0 and ah.get("minPrice") is not None
+
+
 def format_current_price(ah: dict | str | None) -> str:
-    if ah and ah != "timeout" and ah.get("inStock", 0) > 0:
+    if is_listed(ah):
         price_fmt = f"{ah['minPrice']:,}".replace(",", " ")
         return f"{price_fmt} ◈ (×{ah['inStock']} in stock)"
-    if ah == "timeout":
-        return "Unavailable"
-    if ah is not None:
+    if isinstance(ah, dict):
         return "Not listed"
     return "Unavailable"
 
@@ -621,7 +667,7 @@ class LootNoteModal(ErrorReportingModal):
         ah = None
         if self.item_id:
             loop = asyncio.get_event_loop()
-            ah = await loop.run_in_executor(None, fetch_ah_price, self.item_id)
+            ah = await loop.run_in_executor(None, fetch_market_for_item, self.item_id)
 
         embed = discord.Embed(title="📦 Loot Distributed", url=self.item_url, color=0x5865F2)
         embed.add_field(name="Item", value=self.item_name, inline=False)
@@ -767,15 +813,13 @@ def build_embed(item: dict, ah: dict | None) -> discord.Embed:
     url = f"https://questlog.gg/throne-and-liberty/en/db/item/{item_id}"
 
     # AH price
-    if ah and ah != "timeout" and ah.get("inStock", 0) > 0:
+    if is_listed(ah):
         price_fmt = f"{ah['minPrice']:,}".replace(",", " ")
         ah_str = f"  ·  🏪 **{price_fmt} ◈** ×{ah['inStock']}"
-    elif ah == "timeout":
-        ah_str = "  ·  🏪 *Unavailable*"
-    elif ah is not None:
+    elif isinstance(ah, dict):
         ah_str = "  ·  🏪 *Not listed*"
     else:
-        ah_str = ""
+        ah_str = "  ·  🏪 *Unavailable*"
 
     embed = discord.Embed(
         title=item.get("name", "Unknown"),
@@ -864,10 +908,7 @@ async def item_command(interaction: discord.Interaction, item_name: str):
     await interaction.response.defer()
 
     loop = asyncio.get_event_loop()
-    item, ah = await asyncio.gather(
-        loop.run_in_executor(None, fetch_item, item_name),
-        loop.run_in_executor(None, fetch_ah_price, item_name),
-    )
+    item = await loop.run_in_executor(None, fetch_item, item_name)
 
     # Timeout on the item (blocking)
     if item == "timeout":
@@ -883,12 +924,40 @@ async def item_command(interaction: discord.Interaction, item_name: str):
         )
         return
 
+    ah = await loop.run_in_executor(None, fetch_market, item.get("auctionHouseId"))
     print(f"[OK] {user} → {item.get('name')} ({item.get('id')})")
     embed = build_embed(item, ah)
     await interaction.followup.send(embed=embed)
 
 
 # ── Slash command /price ──────────────────────────────────────────────────────
+
+def compute_price_stats(points: list[dict], current_price: int | None) -> dict:
+    """The figures /price has always shown, from hourly points (hours with offers only):
+    Min/Max are the lowest and highest floor price seen, Avg Price the mean of the hourly
+    averages, and the change compares the current floor price with the oldest hour's average."""
+    oldest_price = points[0]["avg"]
+    change_pct = None
+    if current_price is not None and oldest_price:
+        change_pct = round((current_price - oldest_price) / oldest_price * 100, 1)
+    return {
+        "min_price": min(p["min"] for p in points),
+        "max_price": max(p["max"] for p in points),
+        "avg_price": round(sum(p["avg"] for p in points) / len(points)),
+        "avg_stock": round(sum(p["stock"] for p in points) / len(points)),
+        "change_pct": change_pct,
+    }
+
+
+def format_change(change_pct: float | None) -> str:
+    if change_pct is None:
+        return "—"
+    if change_pct > 0:
+        return f"📈 +{change_pct}%"
+    if change_pct < 0:
+        return f"📉 {change_pct}%"
+    return "➡️ 0%"
+
 
 @tree.command(name="price", description="Auction House price history for an item (EU)")
 @app_commands.describe(
@@ -904,14 +973,14 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
     await interaction.response.defer()
 
     loop = asyncio.get_event_loop()
-    ah = await loop.run_in_executor(None, fetch_ah_price, item_name)
+    item = await loop.run_in_executor(None, fetch_item, item_name)
 
-    if ah == "timeout":
+    if item == "timeout":
         print(f"[TIMEOUT/price] {user} requested '{item_name}'")
         await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again.")
         return
 
-    if not ah:
+    if not item:
         print(f"[NOT FOUND/price] {user} requested '{item_name}'")
         await interaction.followup.send(
             f"❌ Item not found: `{item_name}`\n"
@@ -919,65 +988,63 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
         )
         return
 
-    history = ah.get("history", [])
-    buckets_needed = days * 24 // 2  # 2h buckets
-    window = history[:buckets_needed]
+    auction_house_id = item.get("auctionHouseId")
+    if auction_house_id is None:
+        await interaction.followup.send("❌ This item can't be sold on the Auction House.")
+        return
 
-    if not window:
+    market, history = await asyncio.gather(
+        loop.run_in_executor(None, fetch_market, auction_house_id),
+        loop.run_in_executor(None, fetch_price_history, auction_house_id, days),
+    )
+
+    if market == "timeout" or history == "timeout":
+        print(f"[TIMEOUT/price] {user} requested '{item_name}'")
+        await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again.")
+        return
+
+    if market is None or history is None:
+        print(f"[API ERROR/price] {user} requested '{item_name}'")
+        await interaction.followup.send("❌ Auction House data is unavailable right now. Please try again later.")
+        return
+
+    if not history:
         await interaction.followup.send("❌ No price history available for this item.")
         return
 
-    prices  = [e["minPrice"] for e in window if e.get("minPrice") is not None]
-    stocks  = [e["inStock"]  for e in window if e.get("inStock")  is not None]
-
-    current_price = ah.get("minPrice", 0)
-    current_stock = ah.get("inStock", 0)
-    oldest_price  = prices[-1] if prices else current_price
-    avg_price     = round(sum(prices) / len(prices)) if prices else 0
-    min_price     = min(prices) if prices else 0
-    max_price     = max(prices) if prices else 0
-    avg_stock     = round(sum(stocks) / len(stocks)) if stocks else 0
-
-    # % change
-    if oldest_price and oldest_price != current_price:
-        change_pct = round((current_price - oldest_price) / oldest_price * 100, 1)
-        if change_pct > 0:
-            change_str = f"📈 +{change_pct}%"
-        elif change_pct < 0:
-            change_str = f"📉 {change_pct}%"
-        else:
-            change_str = "➡️ 0%"
-    else:
-        change_str = "➡️ 0%"
+    current_price = market["minPrice"]
+    current_stock = market["inStock"]
+    stats = compute_price_stats(history, current_price)
 
     def fmt_price(p: int) -> str:
         return f"{p:,}".replace(",", " ")
 
-    grade = ah.get("grade", 41)
+    grade = item.get("grade", 41)
     _, _, color = GRADE_CONFIG.get(grade, ("", "", 0x5865F2))
-    item_url = f"https://questlog.gg/throne-and-liberty/en/db/item/{item_name}"
+    item_url = f"https://questlog.gg/throne-and-liberty/en/db/item/{item.get('id', item_name)}"
 
     embed = discord.Embed(
-        title=f"{ah.get('name', item_name)}",
+        title=f"{item.get('name', item_name)}",
         url=item_url,
         description=f"🏪 **Auction House — EU** · Last {days} days",
         color=color
     )
 
-    icon_path = ah.get("icon", "")
+    icon_path = item.get("icon", "")
     if icon_path:
         icon_clean = icon_path.rsplit(".", 1)[0]
         embed.set_thumbnail(url=f"https://cdn.questlog.gg/throne-and-liberty{icon_clean}.webp")
 
-    embed.add_field(name="💰 Current Price", value=f"**{fmt_price(current_price)} ◈**", inline=True)
-    embed.add_field(name="📦 In Stock",      value=f"**{current_stock}**",              inline=True)
-    embed.add_field(name="📊 Change",        value=f"**{change_str}**",                 inline=True)
-    embed.add_field(name="⬇️ Min",           value=f"{fmt_price(min_price)} ◈",         inline=True)
-    embed.add_field(name="⬆️ Max",           value=f"{fmt_price(max_price)} ◈",         inline=True)
-    embed.add_field(name="〰️ Avg Price",     value=f"{fmt_price(avg_price)} ◈",         inline=True)
-    embed.add_field(name="📦 Avg Stock",     value=str(avg_stock),                      inline=True)
+    current_text = f"**{fmt_price(current_price)} ◈**" if current_price is not None else "**Not listed**"
+    embed.add_field(name="💰 Current Price", value=current_text,                                  inline=True)
+    embed.add_field(name="📦 In Stock",      value=f"**{current_stock}**",                       inline=True)
+    embed.add_field(name="📊 Change",        value=f"**{format_change(stats['change_pct'])}**",  inline=True)
+    embed.add_field(name="⬇️ Min",           value=f"{fmt_price(stats['min_price'])} ◈",         inline=True)
+    embed.add_field(name="⬆️ Max",           value=f"{fmt_price(stats['max_price'])} ◈",         inline=True)
+    embed.add_field(name="〰️ Avg Price",     value=f"{fmt_price(stats['avg_price'])} ◈",         inline=True)
+    embed.add_field(name="📦 Avg Stock",     value=str(stats["avg_stock"]),                      inline=True)
 
-    print(f"[PRICE] {user} → {ah.get('name')} ({item_name}) {days}d")
+    print(f"[PRICE] {user} → {item.get('name')} ({item_name}) {days}d")
     await interaction.followup.send(embed=embed)
 
 
@@ -1010,10 +1077,7 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
     await interaction.response.defer()
 
     loop = asyncio.get_event_loop()
-    item, ah = await asyncio.gather(
-        loop.run_in_executor(None, fetch_item, item_name),
-        loop.run_in_executor(None, fetch_ah_price, item_name),
-    )
+    item = await loop.run_in_executor(None, fetch_item, item_name)
 
     if item == "timeout":
         print(f"[TIMEOUT/loot] {user} requested '{item_name}'")
@@ -1028,6 +1092,7 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
         )
         return
 
+    ah = await loop.run_in_executor(None, fetch_market, item.get("auctionHouseId"))
     print(f"[LOOT] {user} → {item.get('name')} ({item.get('id')})")
     embed = build_embed(item, ah)
     empty_state = {key: [] for key, _, _ in LOOT_CATEGORIES}
