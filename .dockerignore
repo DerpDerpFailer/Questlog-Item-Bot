@@ -12,3 +12,4 @@ docker-compose.yml
 .dockerignore
 README.md
 graphify-out
+**/.DS_Store
