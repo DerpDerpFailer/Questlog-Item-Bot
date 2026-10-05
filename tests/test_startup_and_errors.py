@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import types
 
 import discord
@@ -160,3 +161,59 @@ def test_cleanup_task_waits_for_the_gateway_before_its_first_iteration(monkeypat
 
     assert waited == [True]
     assert bot.weekly_wishlist_cleanup._before_loop is bot.wait_for_ready_before_cleanup
+
+
+def test_an_interaction_error_is_logged_once_with_its_traceback(caplog):
+    interaction = make_interaction()
+    boom = RuntimeError("boom")
+
+    asyncio.run(bot.report_interaction_error(interaction, "/x", boom))
+
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.levelno == logging.ERROR
+    assert "ERROR in /x (guild=1, user=7)" in record.getMessage()
+    assert record.exc_info[1] is boom
+
+
+def test_a_failing_command_sync_is_logged_as_an_error(monkeypatch, caplog):
+    async def failing_sync():
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(bot.tree, "sync", failing_sync)
+    monkeypatch.setattr(bot, "load_stat_formats", lambda: None)
+    monkeypatch.setattr(bot.weekly_wishlist_cleanup, "start", lambda: None)
+
+    asyncio.run(bot.client.setup_hook())
+
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.ERROR, "Command sync failed: RuntimeError: rate limited")
+    ]
+
+
+def test_main_refuses_to_start_without_a_token(monkeypatch, caplog):
+    ran: list[object] = []
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+    monkeypatch.setattr(discord.utils, "setup_logging", lambda **kwargs: None)
+    monkeypatch.setattr(bot.client, "run", lambda *args, **kwargs: ran.append(args))
+
+    with pytest.raises(SystemExit) as exit_info:
+        bot.main()
+
+    assert exit_info.value.code == 1
+    assert ran == []
+    assert [(r.levelno, "DISCORD_TOKEN" in r.getMessage()) for r in caplog.records] == [(logging.CRITICAL, True)]
+
+
+def test_main_sets_up_logging_once_and_stops_discord_py_from_adding_a_second_handler(monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setenv("DISCORD_TOKEN", "dummy-token")
+    monkeypatch.setattr(discord.utils, "setup_logging", lambda **kwargs: calls.append(("setup_logging", kwargs)))
+    monkeypatch.setattr(bot.client, "run", lambda *args, **kwargs: calls.append(("run", args, kwargs)))
+
+    bot.main()
+
+    assert calls == [
+        ("setup_logging", {"level": logging.INFO}),
+        ("run", ("dummy-token",), {"log_handler": None}),
+    ]

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import types
 
 import discord
@@ -79,17 +80,20 @@ def test_every_command_that_is_admin_only_by_default_also_enforces_it_in_code():
     assert all(command.checks for command in declared)
 
 
-def test_a_refused_admin_check_replies_clearly_and_logs_one_line_without_a_traceback(capsys):
+def test_a_refused_admin_check_replies_clearly_and_logs_one_line_without_a_traceback(caplog):
     interaction = interaction_with(discord.Permissions.none())
     error = app_commands.MissingPermissions(["administrator"])
 
-    asyncio.run(bot.tree.on_error(interaction, error))
+    with caplog.at_level(logging.INFO):
+        asyncio.run(bot.tree.on_error(interaction, error))
 
     assert interaction.response.sent == [bot.ADMIN_REQUIRED_MESSAGE]
-    output = capsys.readouterr().out
-    assert "[DENIED] member (7) → /item-setup" in output
-    assert "missing: administrator" in output
-    assert "Traceback" not in output
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.levelno == logging.WARNING
+    assert "[DENIED] member (7) → /item-setup" in record.getMessage()
+    assert "missing: administrator" in record.getMessage()
+    assert record.exc_info is None
 
 
 def test_a_failing_denial_reply_never_raises():

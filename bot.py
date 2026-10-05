@@ -1,12 +1,13 @@
 import os
 import re
+import sys
 import csv
 import io
 import json
 import time
 import asyncio
 import threading
-import traceback
+import logging
 import requests
 import discord
 from discord import app_commands
@@ -25,7 +26,8 @@ from questlog.domain import (
     toggle_loot_signup,
 )
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+log = logging.getLogger("questlog.bot")
+
 BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
 
 API_TIMEOUT = 8          # seconds before questlog times out
@@ -68,9 +70,9 @@ def load_stat_formats() -> None:
         r.raise_for_status()
         _stat_formats = r.json()["result"]["data"]
         _stat_formats_loaded_at = time.time()
-        print(f"Loaded {len(_stat_formats)} stat formats")
+        log.info(f"Loaded {len(_stat_formats)} stat formats")
     except Exception as e:
-        print(f"Warning: could not load stat formats: {e}")
+        log.warning(f"Could not load stat formats: {e}")
 
 
 def _refresh_stat_formats_in_background() -> None:
@@ -122,9 +124,9 @@ class QuestlogClient(discord.Client):
         weekly_wishlist_cleanup.start()
         try:
             synced = await tree.sync()
-            print(f"Synced {len(synced)} command(s)")
+            log.info(f"Synced {len(synced)} command(s)")
         except Exception as e:
-            print(f"SYNC ERROR: {type(e).__name__}: {e}")
+            log.error(f"Command sync failed: {type(e).__name__}: {e}")
 
 
 intents = discord.Intents.default()
@@ -149,14 +151,13 @@ async def reply_ephemeral(interaction: discord.Interaction, message: str) -> Non
         else:
             await interaction.response.send_message(message, ephemeral=True)
     except discord.HTTPException as e:
-        print(f"Warning: could not deliver the error message: {e}")
+        log.warning(f"Could not deliver the error message: {e}")
 
 
 async def report_interaction_error(interaction: discord.Interaction, source: str, error: Exception) -> None:
     """Log the traceback to the container logs and tell the user something went wrong.
     Never raises: a failing error handler would leave the user with no feedback at all."""
-    print(f"ERROR in {source} (guild={interaction.guild_id}, user={interaction.user.id})")
-    traceback.print_exception(type(error), error, error.__traceback__)
+    log.error(f"ERROR in {source} (guild={interaction.guild_id}, user={interaction.user.id})", exc_info=error)
     message = FORBIDDEN_ERROR_MESSAGE if isinstance(error, discord.Forbidden) else GENERIC_ERROR_MESSAGE
     await reply_ephemeral(interaction, message)
 
@@ -175,7 +176,7 @@ class ErrorReportingModal(discord.ui.Modal):
 async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     command = f"/{interaction.command.name}" if interaction.command else "command tree"
     if isinstance(error, app_commands.MissingPermissions):
-        print(
+        log.warning(
             f"[DENIED] {interaction.user.name} ({interaction.user.id}) → {command} "
             f"(guild={interaction.guild_id}, missing: {', '.join(error.missing_permissions)})"
         )
@@ -197,10 +198,10 @@ def api_get(endpoint: str, input_data: dict) -> dict | None:
         r.raise_for_status()
         return r.json()["result"]["data"]
     except requests.exceptions.Timeout:
-        print(f"API timeout [{endpoint}]")
+        log.warning(f"API timeout [{endpoint}]")
         return "timeout"
     except Exception as e:
-        print(f"API error [{endpoint}]: {e}")
+        log.error(f"API error [{endpoint}]: {e}")
         return None
 
 
@@ -305,7 +306,7 @@ def load_guild_config(guild_id: int) -> dict:
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         quarantine = f"{path}.corrupt-{int(time.time())}"
         os.replace(path, quarantine)
-        print(f"ERROR: guild config {guild_id} is corrupt ({e}); moved to {quarantine}, starting from an empty config")
+        log.error(f"Guild config {guild_id} is corrupt ({e}); moved to {quarantine}, starting from an empty config")
         return {}
 
 
@@ -398,7 +399,7 @@ async def clean_guild_wishlists(guild: discord.Guild) -> list[tuple[str, str]]:
                 pass
             removed.append((user_id_str, name))
         except discord.HTTPException as e:
-            print(f"Warning: could not verify member {user_id_str} in guild {guild.id}: {e}")
+            log.warning(f"Could not verify member {user_id_str} in guild {guild.id}: {e}")
         await asyncio.sleep(0.5)
 
     if removed:
@@ -587,10 +588,10 @@ class LootNoteModal(ErrorReportingModal):
             await self.source_message.delete()
         except discord.HTTPException as e:
             delete_failed = True
-            print(f"Warning: could not delete loot message {self.source_message.id}: {e}")
+            log.warning(f"Could not delete loot message {self.source_message.id}: {e}")
 
         note_suffix = f" note={self.note.value!r}" if self.note.value else ""
-        print(
+        log.info(
             f"[LOOT DISTRIBUTE] {interaction.user.name} ({interaction.user.id}) → "
             f"{self.item_name} to {self.recipient.name} ({self.recipient.id}){note_suffix}"
         )
@@ -642,7 +643,7 @@ class WishlistRemoveView(ErrorReportingView):
         save_guild_config(self.guild_id, wishlists=wishlists)
 
         if removed:
-            print(f"[WISHLIST REMOVE] {interaction.user.name} ({interaction.user.id}) → {removed['name']} ({removed['id']})")
+            log.info(f"[WISHLIST REMOVE] {interaction.user.name} ({interaction.user.id}) → {removed['name']} ({removed['id']})")
 
         embed = build_wishlist_embed(interaction.user, user_items)
         view = WishlistRemoveView(self.guild_id, self.user_id, user_items) if user_items else None
@@ -813,12 +814,12 @@ async def item_command(interaction: discord.Interaction, item_name: str):
 
     # Timeout on the item (blocking)
     if item == "timeout":
-        print(f"[TIMEOUT] {user} requested '{item_name}'")
+        log.info(f"[TIMEOUT] {user} requested '{item_name}'")
         await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.")
         return
 
     if not item:
-        print(f"[NOT FOUND] {user} requested '{item_name}'")
+        log.info(f"[NOT FOUND] {user} requested '{item_name}'")
         await interaction.followup.send(
             f"❌ Item not found: `{item_name}`\n"
             "💡 Use autocomplete to select an item from the list."
@@ -826,7 +827,7 @@ async def item_command(interaction: discord.Interaction, item_name: str):
         return
 
     ah = await loop.run_in_executor(None, fetch_market, item.get("auctionHouseId"))
-    print(f"[OK] {user} → {item.get('name')} ({item.get('id')})")
+    log.info(f"[OK] {user} → {item.get('name')} ({item.get('id')})")
     embed = build_embed(item, ah)
     await interaction.followup.send(embed=embed)
 
@@ -851,12 +852,12 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
     item = await loop.run_in_executor(None, fetch_item, item_name)
 
     if item == "timeout":
-        print(f"[TIMEOUT/price] {user} requested '{item_name}'")
+        log.info(f"[TIMEOUT/price] {user} requested '{item_name}'")
         await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again.")
         return
 
     if not item:
-        print(f"[NOT FOUND/price] {user} requested '{item_name}'")
+        log.info(f"[NOT FOUND/price] {user} requested '{item_name}'")
         await interaction.followup.send(
             f"❌ Item not found: `{item_name}`\n"
             "💡 Use autocomplete to select an item from the list."
@@ -874,12 +875,12 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
     )
 
     if market == "timeout" or history == "timeout":
-        print(f"[TIMEOUT/price] {user} requested '{item_name}'")
+        log.info(f"[TIMEOUT/price] {user} requested '{item_name}'")
         await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again.")
         return
 
     if market is None or history is None:
-        print(f"[API ERROR/price] {user} requested '{item_name}'")
+        log.info(f"[API ERROR/price] {user} requested '{item_name}'")
         await interaction.followup.send("❌ Auction House data is unavailable right now. Please try again later.")
         return
 
@@ -919,7 +920,7 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
     embed.add_field(name="〰️ Avg Price",     value=f"{fmt_price(stats['avg_price'])} ◈",         inline=True)
     embed.add_field(name="📦 Avg Stock",     value=str(stats["avg_stock"]),                      inline=True)
 
-    print(f"[PRICE] {user} → {item.get('name')} ({item_name}) {days}d")
+    log.info(f"[PRICE] {user} → {item.get('name')} ({item_name}) {days}d")
     await interaction.followup.send(embed=embed)
 
 
@@ -955,12 +956,12 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
     item = await loop.run_in_executor(None, fetch_item, item_name)
 
     if item == "timeout":
-        print(f"[TIMEOUT/loot] {user} requested '{item_name}'")
+        log.info(f"[TIMEOUT/loot] {user} requested '{item_name}'")
         await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.")
         return
 
     if not item:
-        print(f"[NOT FOUND/loot] {user} requested '{item_name}'")
+        log.info(f"[NOT FOUND/loot] {user} requested '{item_name}'")
         await interaction.followup.send(
             f"❌ Item not found: `{item_name}`\n"
             "💡 Use autocomplete to select an item from the list."
@@ -968,7 +969,7 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
         return
 
     ah = await loop.run_in_executor(None, fetch_market, item.get("auctionHouseId"))
-    print(f"[LOOT] {user} → {item.get('name')} ({item.get('id')})")
+    log.info(f"[LOOT] {user} → {item.get('name')} ({item.get('id')})")
     embed = build_embed(item, ah)
     empty_state = {key: [] for key, _, _ in LOOT_CATEGORIES}
     embed.add_field(name=LOOT_FIELD_NAME, value=format_loot_field(empty_state), inline=False)
@@ -1012,7 +1013,7 @@ async def item_setup_command(
         parts.append(f"Distribution log channel → {log_channel.mention}")
 
     save_guild_config(guild_id, **updates)
-    print(f"[ITEM SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
+    log.info(f"[ITEM SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
     await interaction.response.send_message("✅ Configured: " + " · ".join(parts), ephemeral=True)
 
 
@@ -1087,7 +1088,7 @@ async def wishlist_command(interaction: discord.Interaction, item_name: str = No
         )
         return
 
-    print(f"[WISHLIST ADD] {interaction.user.name} ({interaction.user.id}) → {item.get('name')} ({item.get('id')}) [{count}/{limit}]")
+    log.info(f"[WISHLIST ADD] {interaction.user.name} ({interaction.user.id}) → {item.get('name')} ({item.get('id')}) [{count}/{limit}]")
     await interaction.followup.send(f"✅ **{item.get('name')}** added to your wishlist ({count}/{limit}).", ephemeral=True)
 
 
@@ -1128,7 +1129,7 @@ async def wishlist_setup_command(
         parts.append(f"Auto-cleanup log channel → {log_channel.mention}")
 
     save_guild_config(guild_id, **updates)
-    print(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
+    log.info(f"[WISHLIST SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")
     await interaction.response.send_message("✅ Configured: " + " · ".join(parts), ephemeral=True)
 
 
@@ -1174,7 +1175,7 @@ async def wishlist_check_command(interaction: discord.Interaction, item_name: st
         description="\n".join(interested),
         color=0x5865F2
     )
-    print(f"[WISHLIST CHECK] {interaction.user.name} ({interaction.user.id}) → {item_display_name} ({len(interested)} interested)")
+    log.info(f"[WISHLIST CHECK] {interaction.user.name} ({interaction.user.id}) → {item_display_name} ({len(interested)} interested)")
     await interaction.response.send_message(embed=embed)
 
 
@@ -1235,7 +1236,7 @@ async def wishlist_export_command(interaction: discord.Interaction):
         return
 
     embeds = build_wishlist_export_embeds(entries)
-    print(f"[WISHLIST EXPORT] {interaction.user.name} ({interaction.user.id}) → {len(entries)} member(s), {len(embeds)} embed(s)")
+    log.info(f"[WISHLIST EXPORT] {interaction.user.name} ({interaction.user.id}) → {len(entries)} member(s), {len(embeds)} embed(s)")
 
     await interaction.response.send_message(
         embeds=embeds[:EMBEDS_PER_MESSAGE], view=WishlistExportView(guild_id)
@@ -1268,7 +1269,7 @@ async def wishlist_clean_command(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
     removed = await clean_guild_wishlists(interaction.guild)
-    print(f"[WISHLIST CLEAN] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} removed={len(removed)}: {removed}")
+    log.info(f"[WISHLIST CLEAN] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} removed={len(removed)}: {removed}")
 
     if not removed:
         await interaction.followup.send("🧹 Cleanup complete: no departed members found.", ephemeral=True)
@@ -1340,14 +1341,14 @@ async def run_weekly_cleanup_for_guild(guild: discord.Guild) -> None:
     removed = await clean_guild_wishlists(guild)
     if not removed:
         return
-    print(f"[WISHLIST CLEAN/auto] guild={guild.id} removed={removed}")
+    log.info(f"[WISHLIST CLEAN/auto] guild={guild.id} removed={removed}")
 
     log_channel_id = load_guild_config(guild.id).get("log_channel_id")
     if not log_channel_id:
         return
     channel = guild.get_channel(log_channel_id)
     if channel is None:
-        print(f"Warning: log channel {log_channel_id} not found in guild {guild.id}")
+        log.warning(f"Log channel {log_channel_id} not found in guild {guild.id}")
         return
     await channel.send(embed=build_wishlist_clean_embed(removed))
 
@@ -1358,7 +1359,7 @@ async def weekly_wishlist_cleanup():
         try:
             await run_weekly_cleanup_for_guild(guild)
         except Exception as e:
-            print(f"Warning: auto wishlist cleanup failed for guild {guild.id}: {e}")
+            log.exception(f"Auto wishlist cleanup failed for guild {guild.id}: {e}")
 
 
 @weekly_wishlist_cleanup.before_loop
@@ -1371,8 +1372,19 @@ async def wait_for_ready_before_cleanup():
 
 @client.event
 async def on_ready():
-    print(f"Logged in as {client.user}")
+    log.info(f"Logged in as {client.user}")
+
+
+def main() -> None:
+    # client.run() only configures the "discord" logger; configure the root logger ourselves so the
+    # bot's own records share its format, and tell run() not to add a second handler.
+    discord.utils.setup_logging(level=logging.INFO)
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        log.critical("DISCORD_TOKEN is not set: define it in .env or in the Portainer stack's environment variables")
+        sys.exit(1)
+    client.run(token, log_handler=None)
 
 
 if __name__ == "__main__":
-    client.run(TOKEN)
+    main()
