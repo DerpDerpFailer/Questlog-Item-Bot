@@ -6,6 +6,7 @@ import discord
 import pytest
 
 import bot
+from questlog import domain
 
 def deep_copy_embed(embed: discord.Embed) -> discord.Embed:
     # Embed.copy() shares the internal fields list, which would leak edits between "clients".
@@ -20,8 +21,7 @@ def loot_env(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "DATA_DIR", str(tmp_path))
     bot.save_guild_config(1, button_role_id=10)
     monkeypatch.setattr(bot, "has_role", lambda member, role_id: True)
-    if hasattr(bot, "LootStateStore"):
-        monkeypatch.setattr(bot, "LOOT_STATES", bot.LootStateStore())
+    monkeypatch.setattr(bot, "LOOT_STATES", domain.LootStateStore())
 
 
 class FakeServerMessage:
@@ -32,16 +32,16 @@ class FakeServerMessage:
 
     def __init__(self, signups: dict[str, list[int]] | None = None, delay: float = 0.05):
         embed = discord.Embed(title="Some Item")
-        state = {key: [] for key, _, _ in bot.LOOT_CATEGORIES}
+        state = {key: [] for key, _, _ in domain.LOOT_CATEGORIES}
         state.update(signups or {})
-        embed.add_field(name=bot.LOOT_FIELD_NAME, value=bot.format_loot_field(state), inline=False)
+        embed.add_field(name=domain.LOOT_FIELD_NAME, value=domain.format_loot_field(state), inline=False)
         self.embed = embed
         self.delay = delay
         self.fail_next_edit = False
         self.events: list[tuple[str, int]] = []
 
     def signups(self) -> dict[str, list[int]]:
-        return bot.parse_loot_field(self.embed.fields[0].value)
+        return domain.parse_loot_field(self.embed.fields[0].value)
 
     async def apply(self, embed: discord.Embed, user_id: int) -> None:
         await asyncio.sleep(self.delay)
@@ -94,16 +94,16 @@ async def click(interaction: FakeClick, category: str) -> None:
 
 
 def test_toggle_adds_moves_and_removes_a_signup_without_mutating_its_input():
-    empty = {key: [] for key, _, _ in bot.LOOT_CATEGORIES}
+    empty = {key: [] for key, _, _ in domain.LOOT_CATEGORIES}
 
-    added = bot.toggle_loot_signup(empty, 1, "pvp")
+    added = domain.toggle_loot_signup(empty, 1, "pvp")
     assert added["pvp"] == [1]
     assert empty["pvp"] == []
 
-    moved = bot.toggle_loot_signup(added, 1, "greed")
+    moved = domain.toggle_loot_signup(added, 1, "greed")
     assert moved["pvp"] == [] and moved["greed"] == [1]
 
-    removed = bot.toggle_loot_signup(moved, 1, "greed")
+    removed = domain.toggle_loot_signup(moved, 1, "greed")
     assert removed == empty
 
 
@@ -176,7 +176,7 @@ def test_a_member_without_the_button_role_is_refused_before_anything_is_acknowle
 
 
 def test_the_state_store_evicts_the_oldest_messages_first():
-    store = bot.LootStateStore(max_size=2)
+    store = domain.LootStateStore(max_size=2)
     for message_id in (1, 2, 3):
         store.entry(message_id).state = {"pvp": [message_id]}
 
@@ -186,7 +186,7 @@ def test_the_state_store_evicts_the_oldest_messages_first():
 
 
 def test_the_state_store_never_evicts_a_message_that_is_being_edited():
-    store = bot.LootStateStore(max_size=2)
+    store = domain.LootStateStore(max_size=2)
 
     async def run():
         busy = store.entry(1)

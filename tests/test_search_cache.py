@@ -4,12 +4,12 @@ import threading
 import pytest
 
 import bot
+from questlog import domain
 
 
 @pytest.fixture(autouse=True)
 def fresh_cache(monkeypatch):
-    if hasattr(bot, "TTLCache"):
-        monkeypatch.setattr(bot, "_search_cache", bot.TTLCache(60, 512))
+    monkeypatch.setattr(bot, "_search_cache", domain.TTLCache(60, 512))
 
 
 class Clock:
@@ -111,7 +111,7 @@ def test_callers_cannot_corrupt_the_cached_results(monkeypatch):
 
 def test_a_cached_search_expires_after_the_ttl(monkeypatch):
     clock = Clock()
-    monkeypatch.setattr(bot, "_search_cache", bot.TTLCache(60, 512, clock=clock))
+    monkeypatch.setattr(bot, "_search_cache", domain.TTLCache(60, 512, clock=clock))
     api = FakeApi(page(item("a", "Alpha")))
     monkeypatch.setattr(bot, "api_get", api)
 
@@ -127,7 +127,7 @@ def test_a_cached_search_expires_after_the_ttl(monkeypatch):
 
 def test_ttl_cache_entries_expire_exactly_at_the_ttl():
     clock = Clock()
-    cache = bot.TTLCache(10, 5, clock=clock)
+    cache = domain.TTLCache(10, 5, clock=clock)
     cache.set("k", [{"id": "a"}])
 
     clock.now = 9.9
@@ -137,7 +137,7 @@ def test_ttl_cache_entries_expire_exactly_at_the_ttl():
 
 
 def test_ttl_cache_evicts_the_least_recently_used_entry_first():
-    cache = bot.TTLCache(60, 2, clock=Clock())
+    cache = domain.TTLCache(60, 2, clock=Clock())
     cache.set("a", [1])
     cache.set("b", [2])
     cache.get("a")
@@ -149,7 +149,7 @@ def test_ttl_cache_evicts_the_least_recently_used_entry_first():
 
 
 def test_ttl_cache_survives_concurrent_access_from_threads():
-    cache = bot.TTLCache(60, 16)
+    cache = domain.TTLCache(60, 16)
     errors: list[BaseException] = []
     barrier = threading.Barrier(8)
 

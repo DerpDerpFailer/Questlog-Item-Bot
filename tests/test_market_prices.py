@@ -6,6 +6,7 @@ import discord
 import pytest
 
 import bot
+from questlog import domain
 
 # Shapes captured from the live questlog.gg API (auctionHouse.getItemMarket / getItemHistory).
 MARKET_LISTED = {
@@ -197,7 +198,7 @@ POINTS = [
 
 
 def test_price_stats_keep_the_meaning_of_the_original_figures():
-    stats = bot.compute_price_stats(POINTS, current_price=1298)
+    stats = domain.compute_price_stats(POINTS, current_price=1298)
 
     assert stats == {
         "min_price": 998,
@@ -209,16 +210,16 @@ def test_price_stats_keep_the_meaning_of_the_original_figures():
 
 
 def test_the_change_is_unknown_without_a_current_price_or_a_usable_reference():
-    assert bot.compute_price_stats(POINTS, current_price=None)["change_pct"] is None
+    assert domain.compute_price_stats(POINTS, current_price=None)["change_pct"] is None
     zero_start = [dict(POINTS[0], avg=0)] + POINTS[1:]
-    assert bot.compute_price_stats(zero_start, current_price=1298)["change_pct"] is None
+    assert domain.compute_price_stats(zero_start, current_price=1298)["change_pct"] is None
 
 
 def test_change_formatting():
-    assert bot.format_change(None) == "—"
-    assert bot.format_change(8.3) == "📈 +8.3%"
-    assert bot.format_change(-4.5) == "📉 -4.5%"
-    assert bot.format_change(0.0) == "➡️ 0%"
+    assert domain.format_change(None) == "—"
+    assert domain.format_change(8.3) == "📈 +8.3%"
+    assert domain.format_change(-4.5) == "📉 -4.5%"
+    assert domain.format_change(0.0) == "➡️ 0%"
 
 
 @pytest.mark.parametrize(
@@ -231,7 +232,7 @@ def test_change_formatting():
     ],
 )
 def test_prices_are_formatted_and_a_failed_lookup_is_visible(ah, expected_price, expected_embed):
-    assert bot.format_current_price(ah) == expected_price
+    assert domain.format_current_price(ah) == expected_price
     assert expected_embed in bot.build_embed(ITEM, ah).description
 
 
