@@ -6,6 +6,7 @@ import discord
 import pytest
 
 import bot
+from questlog import api as questlog_api
 from questlog import domain
 
 # Shapes captured from the live questlog.gg API (auctionHouse.getItemMarket / getItemHistory).
@@ -46,7 +47,7 @@ def data_dir(tmp_path, monkeypatch):
 
 
 class FakeApi:
-    """Stands in for bot.api_get, keyed by endpoint; records every call."""
+    """Stands in for api.api_get, keyed by endpoint; records every call."""
 
     def __init__(self, **responses):
         self.responses = responses
@@ -98,62 +99,63 @@ def field(embed: discord.Embed, name: str) -> str:
 
 
 def test_the_removed_get_auction_item_endpoint_is_no_longer_referenced():
-    assert "getAuctionItem" not in pathlib.Path(bot.__file__).read_text()
+    for module in (bot, questlog_api):
+        assert "getAuctionItem" not in pathlib.Path(module.__file__).read_text()
 
 
 def test_fetch_market_asks_for_the_item_by_auction_house_id_and_reads_the_eu_floor(monkeypatch):
     api = FakeApi(**{"auctionHouse.getItemMarket": MARKET_LISTED})
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.fetch_market(1769664410) == {"minPrice": 12950, "inStock": 2}
+    assert questlog_api.fetch_market(1769664410) == {"minPrice": 12950, "inStock": 2}
     assert api.calls == [
         ("auctionHouse.getItemMarket", {"auctionHouseId": 1769664410, "potentialAbilityId": None})
     ]
 
 
 def test_a_listing_in_another_region_does_not_count(monkeypatch):
-    monkeypatch.setattr(bot, "api_get", FakeApi(**{"auctionHouse.getItemMarket": MARKET_ONLY_LISTED_IN_NA}))
-    assert bot.fetch_market(1) == {"minPrice": None, "inStock": 0}
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(**{"auctionHouse.getItemMarket": MARKET_ONLY_LISTED_IN_NA}))
+    assert questlog_api.fetch_market(1) == {"minPrice": None, "inStock": 0}
 
 
 def test_an_item_the_api_has_no_market_for_is_simply_not_listed(monkeypatch):
-    monkeypatch.setattr(bot, "api_get", FakeApi(**{"auctionHouse.getItemMarket": {}}))
-    assert bot.fetch_market(1741582256) == {"minPrice": None, "inStock": 0}
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(**{"auctionHouse.getItemMarket": {}}))
+    assert questlog_api.fetch_market(1741582256) == {"minPrice": None, "inStock": 0}
 
 
 def test_an_item_without_an_auction_house_id_never_reaches_the_api(monkeypatch):
-    monkeypatch.setattr(bot, "api_get", never_called("api_get"))
-    assert bot.fetch_market(None) == {"minPrice": None, "inStock": 0}
+    monkeypatch.setattr(questlog_api, "api_get", never_called("api_get"))
+    assert questlog_api.fetch_market(None) == {"minPrice": None, "inStock": 0}
 
 
 @pytest.mark.parametrize("failure", [None, "timeout"])
 def test_market_lookup_failures_are_passed_through(monkeypatch, failure):
-    monkeypatch.setattr(bot, "api_get", FakeApi(**{"auctionHouse.getItemMarket": failure}))
-    assert bot.fetch_market(1) == failure
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(**{"auctionHouse.getItemMarket": failure}))
+    assert questlog_api.fetch_market(1) == failure
 
 
 def test_fetch_market_for_item_resolves_the_auction_house_id_first(monkeypatch):
-    monkeypatch.setattr(bot, "fetch_item", lambda item_id: {"id": item_id, "auctionHouseId": 42})
+    monkeypatch.setattr(questlog_api, "fetch_item", lambda item_id: {"id": item_id, "auctionHouseId": 42})
     api = FakeApi(**{"auctionHouse.getItemMarket": MARKET_LISTED})
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.fetch_market_for_item("some_item") == {"minPrice": 12950, "inStock": 2}
+    assert questlog_api.fetch_market_for_item("some_item") == {"minPrice": 12950, "inStock": 2}
     assert api.calls[0][1]["auctionHouseId"] == 42
 
 
 @pytest.mark.parametrize("failure", [None, "timeout"])
 def test_fetch_market_for_item_passes_item_lookup_failures_through(monkeypatch, failure):
-    monkeypatch.setattr(bot, "fetch_item", lambda item_id: failure)
-    monkeypatch.setattr(bot, "api_get", never_called("api_get"))
-    assert bot.fetch_market_for_item("some_item") == failure
+    monkeypatch.setattr(questlog_api, "fetch_item", lambda item_id: failure)
+    monkeypatch.setattr(questlog_api, "api_get", never_called("api_get"))
+    assert questlog_api.fetch_market_for_item("some_item") == failure
 
 
 @pytest.mark.parametrize("days, expected_range", [(7, "7d"), (30, "all")])
 def test_fetch_price_history_reads_hourly_data_for_a_week_and_the_daily_series_beyond(monkeypatch, days, expected_range):
     api = FakeApi(**{"auctionHouse.getItemHistory": {"bucket": "hour", "series": {"eu-f": []}}})
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.fetch_price_history(10042047, days) == []
+    assert questlog_api.fetch_price_history(10042047, days) == []
     assert api.calls == [(
         "auctionHouse.getItemHistory",
         {"auctionHouseId": 10042047, "potentialAbilityId": None, "range": expected_range},
@@ -165,19 +167,19 @@ def test_the_daily_series_is_cut_to_the_requested_window(monkeypatch):
     now = 100 * day
     series = [[now - 40 * day, 5, 5, 5, 5, 1], [now - 29 * day, 6, 6, 6, 6, 1], [now - 2 * day, 7, 7, 7, 7, 1]]
     monkeypatch.setattr(
-        bot, "api_get", FakeApi(**{"auctionHouse.getItemHistory": {"bucket": "day", "series": {"eu-f": series}}})
+        questlog_api, "api_get", FakeApi(**{"auctionHouse.getItemHistory": {"bucket": "day", "series": {"eu-f": series}}})
     )
 
-    points = bot.fetch_price_history(1, 30, now_ms=now)
+    points = questlog_api.fetch_price_history(1, 30, now_ms=now)
 
     assert [p["min"] for p in points] == [6, 7]
 
 
 def test_history_points_are_decoded_filtered_and_sorted_oldest_first(monkeypatch):
     data = {"bucket": "hour", "series": {"eu-f": RAW_SERIES, "na-f": [[1, 5, 5, 5, 5, 5]]}}
-    monkeypatch.setattr(bot, "api_get", FakeApi(**{"auctionHouse.getItemHistory": data}))
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(**{"auctionHouse.getItemHistory": data}))
 
-    points = bot.fetch_price_history(1, 7)
+    points = questlog_api.fetch_price_history(1, 7)
 
     assert [p["time"] for p in points] == [1790539200000, 1790542800000, 1791129600000]
     assert points[1] == {"time": 1790542800000, "min": 999, "max": 1199, "avg": 1115, "last": 999, "stock": 11}
@@ -185,8 +187,8 @@ def test_history_points_are_decoded_filtered_and_sorted_oldest_first(monkeypatch
 
 @pytest.mark.parametrize("failure", [None, "timeout"])
 def test_history_lookup_failures_are_passed_through(monkeypatch, failure):
-    monkeypatch.setattr(bot, "api_get", FakeApi(**{"auctionHouse.getItemHistory": failure}))
-    assert bot.fetch_price_history(1, 7) == failure
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(**{"auctionHouse.getItemHistory": failure}))
+    assert questlog_api.fetch_price_history(1, 7) == failure
 
 
 POINTS = [
@@ -348,8 +350,9 @@ def run_distribution(monkeypatch, *, item_result, market_result=None):
     interaction = FakeInteraction()
     interaction.guild = guild
     recipient = types.SimpleNamespace(id=9, name="winner", mention="<@9>")
-    monkeypatch.setattr(bot, "fetch_item", lambda item_id: item_result)
-    monkeypatch.setattr(bot, "fetch_market", lambda ahid: market_result)
+    # The modal resolves the price through api.fetch_market_for_item, which calls these two inside api.py.
+    monkeypatch.setattr(questlog_api, "fetch_item", lambda item_id: item_result)
+    monkeypatch.setattr(questlog_api, "fetch_market", lambda ahid: market_result)
 
     async def run():
         modal = bot.LootNoteModal(1, FakeMessage(), "Some Item", None, "some_item", None, recipient)

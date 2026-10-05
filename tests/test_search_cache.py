@@ -4,12 +4,13 @@ import threading
 import pytest
 
 import bot
+from questlog import api as questlog_api
 from questlog import domain
 
 
 @pytest.fixture(autouse=True)
 def fresh_cache(monkeypatch):
-    monkeypatch.setattr(bot, "_search_cache", domain.TTLCache(60, 512))
+    monkeypatch.setattr(questlog_api, "_search_cache", domain.TTLCache(60, 512))
 
 
 class Clock:
@@ -21,7 +22,7 @@ class Clock:
 
 
 class FakeApi:
-    """Stands in for bot.api_get: records the search terms it receives and replays the
+    """Stands in for api.api_get: records the search terms it receives and replays the
     programmed responses in order (the last one repeats)."""
 
     def __init__(self, *responses):
@@ -43,85 +44,85 @@ def item(item_id: str, name: str, disabled: bool = False) -> dict:
 
 def test_the_same_search_is_served_from_the_cache(monkeypatch):
     api = FakeApi(page(item("a", "Alpha")))
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.search_items("alp") == [{"id": "a", "name": "Alpha"}]
-    assert bot.search_items("alp") == [{"id": "a", "name": "Alpha"}]
+    assert questlog_api.search_items("alp") == [{"id": "a", "name": "Alpha"}]
+    assert questlog_api.search_items("alp") == [{"id": "a", "name": "Alpha"}]
     assert api.terms == ["alp"]
 
 
 def test_the_cache_ignores_case_and_extra_spaces(monkeypatch):
     api = FakeApi(page(item("a", "Ascended Bow")))
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    bot.search_items("Ascended Bow")
-    bot.search_items("  ascended   bow ")
+    questlog_api.search_items("Ascended Bow")
+    questlog_api.search_items("  ascended   bow ")
 
     assert api.terms == ["Ascended Bow"]
 
 
 def test_different_searches_are_not_mixed_up(monkeypatch):
     api = FakeApi(page(item("a", "Alpha")), page(item("b", "Beta")))
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.search_items("alp") == [{"id": "a", "name": "Alpha"}]
-    assert bot.search_items("bet") == [{"id": "b", "name": "Beta"}]
+    assert questlog_api.search_items("alp") == [{"id": "a", "name": "Alpha"}]
+    assert questlog_api.search_items("bet") == [{"id": "b", "name": "Beta"}]
     assert api.terms == ["alp", "bet"]
 
 
 def test_failed_lookups_are_never_cached(monkeypatch):
     api = FakeApi(None, "timeout", page(item("a", "Alpha")))
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.search_items("alp") == []
-    assert bot.search_items("alp") == []
-    assert bot.search_items("alp") == [{"id": "a", "name": "Alpha"}]
-    assert bot.search_items("alp") == [{"id": "a", "name": "Alpha"}]
+    assert questlog_api.search_items("alp") == []
+    assert questlog_api.search_items("alp") == []
+    assert questlog_api.search_items("alp") == [{"id": "a", "name": "Alpha"}]
+    assert questlog_api.search_items("alp") == [{"id": "a", "name": "Alpha"}]
     assert api.terms == ["alp", "alp", "alp"]
 
 
 def test_an_empty_but_successful_result_is_cached(monkeypatch):
     api = FakeApi(page())
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    assert bot.search_items("zzz") == []
-    assert bot.search_items("zzz") == []
+    assert questlog_api.search_items("zzz") == []
+    assert questlog_api.search_items("zzz") == []
     assert api.terms == ["zzz"]
 
 
 def test_disabled_items_are_filtered_and_results_are_capped_at_25(monkeypatch):
     items = [item(f"i{n}", f"Item {n}", disabled=(n % 5 == 0)) for n in range(40)]
-    monkeypatch.setattr(bot, "api_get", FakeApi(page(*items)))
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(page(*items)))
 
-    results = bot.search_items("item")
+    results = questlog_api.search_items("item")
 
     assert len(results) == 25
     assert all(int(r["id"][1:]) % 5 != 0 for r in results)
 
 
 def test_callers_cannot_corrupt_the_cached_results(monkeypatch):
-    monkeypatch.setattr(bot, "api_get", FakeApi(page(item("a", "Alpha"))))
+    monkeypatch.setattr(questlog_api, "api_get", FakeApi(page(item("a", "Alpha"))))
 
-    first = bot.search_items("alp")
+    first = questlog_api.search_items("alp")
     first[0]["name"] = "HACKED"
     first.append({"id": "x", "name": "Extra"})
 
-    assert bot.search_items("alp") == [{"id": "a", "name": "Alpha"}]
+    assert questlog_api.search_items("alp") == [{"id": "a", "name": "Alpha"}]
 
 
 def test_a_cached_search_expires_after_the_ttl(monkeypatch):
     clock = Clock()
-    monkeypatch.setattr(bot, "_search_cache", domain.TTLCache(60, 512, clock=clock))
+    monkeypatch.setattr(questlog_api, "_search_cache", domain.TTLCache(60, 512, clock=clock))
     api = FakeApi(page(item("a", "Alpha")))
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
-    bot.search_items("alp")
+    questlog_api.search_items("alp")
     clock.now = 59
-    bot.search_items("alp")
+    questlog_api.search_items("alp")
     assert api.terms == ["alp"]
 
     clock.now = 61
-    bot.search_items("alp")
+    questlog_api.search_items("alp")
     assert api.terms == ["alp", "alp"]
 
 
@@ -175,7 +176,7 @@ def test_ttl_cache_survives_concurrent_access_from_threads():
 
 def test_all_autocompletes_share_the_cache_and_still_ignore_short_input(monkeypatch):
     api = FakeApi(page(item("a", "Alpha")))
-    monkeypatch.setattr(bot, "api_get", api)
+    monkeypatch.setattr(questlog_api, "api_get", api)
 
     async def run():
         first = await bot.item_autocomplete(None, "alp")

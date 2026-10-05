@@ -217,3 +217,10 @@ def test_main_sets_up_logging_once_and_stops_discord_py_from_adding_a_second_han
         ("setup_logging", {"level": logging.INFO}),
         ("run", ("dummy-token",), {"log_handler": None}),
     ]
+
+
+def test_all_nine_slash_commands_stay_registered():
+    assert {command.name for command in bot.tree.get_commands()} == {
+        "item", "price", "item-loot", "item-setup",
+        "wishlist", "wishlist-setup", "wishlist-check", "wishlist-export", "wishlist-clean",
+    }

@@ -6,17 +6,21 @@ import io
 import json
 import time
 import asyncio
-import threading
 import logging
-import requests
 import discord
 from discord import app_commands
 from discord.ext import tasks
+from questlog.api import (
+    fetch_item,
+    fetch_market,
+    fetch_market_for_item,
+    fetch_price_history,
+    search_items,
+)
 from questlog.domain import (
     LOOT_CATEGORIES,
     LOOT_FIELD_NAME,
     LootStateStore,
-    TTLCache,
     compute_price_stats,
     format_change,
     format_current_price,
@@ -25,21 +29,15 @@ from questlog.domain import (
     parse_loot_field,
     toggle_loot_signup,
 )
+from questlog.stats import format_stat, get_stat_formats, load_stat_formats
 
 log = logging.getLogger("questlog.bot")
 
-BASE_URL = "https://questlog.gg/throne-and-liberty/api/trpc"
-
-API_TIMEOUT = 8          # seconds before questlog times out
-STAT_FORMAT_TTL = 86400  # 24h in seconds
-STAT_FORMAT_RETRY = 300  # seconds before retrying a failed stat-format refresh
 DATA_DIR = "data"
 
 EMBED_MAX_CHARS = 5900   # margin under Discord's 6000-character-per-embed limit
 EMBED_MAX_FIELDS = 25
 EMBEDS_PER_MESSAGE = 10
-SEARCH_CACHE_TTL = 60    # seconds; item names barely change, so this only needs to absorb keystroke bursts
-SEARCH_CACHE_SIZE = 512
 
 
 # Grade → rarity label + color
@@ -49,69 +47,6 @@ GRADE_CONFIG = {
     42: ("💜", "Epic II",  0x7B1FA2),
     43: ("💎", "Epic III", 0x4A148C),
 }
-
-# Stat formats cache
-_stat_formats: dict = {}
-_stat_formats_loaded_at: float = 0.0
-_stat_formats_attempted_at: float = 0.0
-_stat_formats_refreshing: bool = False
-_stat_formats_lock = threading.Lock()
-
-
-def load_stat_formats() -> None:
-    global _stat_formats, _stat_formats_loaded_at
-    try:
-        r = requests.get(
-            f"{BASE_URL}/statFormat.getStatFormat",
-            params={"input": json.dumps({"language": "en"}, separators=(",", ":"))},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=API_TIMEOUT
-        )
-        r.raise_for_status()
-        _stat_formats = r.json()["result"]["data"]
-        _stat_formats_loaded_at = time.time()
-        log.info(f"Loaded {len(_stat_formats)} stat formats")
-    except Exception as e:
-        log.warning(f"Could not load stat formats: {e}")
-
-
-def _refresh_stat_formats_in_background() -> None:
-    global _stat_formats_refreshing
-    try:
-        load_stat_formats()
-    finally:
-        with _stat_formats_lock:
-            _stat_formats_refreshing = False
-
-
-def get_stat_formats() -> dict:
-    """Never blocks: called from async handlers, where a slow questlog.gg would otherwise
-    freeze the whole bot for up to API_TIMEOUT seconds. When the formats are older than 24h
-    the stale ones keep being served while one background thread refreshes them; a failed
-    refresh is retried after STAT_FORMAT_RETRY seconds instead of on every call."""
-    global _stat_formats_refreshing, _stat_formats_attempted_at
-    now = time.time()
-    stale = now - _stat_formats_loaded_at > STAT_FORMAT_TTL
-    if stale and now - _stat_formats_attempted_at > STAT_FORMAT_RETRY:
-        with _stat_formats_lock:
-            if not _stat_formats_refreshing:
-                _stat_formats_refreshing = True
-                _stat_formats_attempted_at = now
-                threading.Thread(target=_refresh_stat_formats_in_background, daemon=True).start()
-    return _stat_formats
-
-
-def format_stat(key: str, value: float) -> str:
-    fmt = get_stat_formats().get(key)
-    if not fmt:
-        return f"{key}: {value}"
-    name = fmt.get("name", key)
-    multiplier = fmt.get("multiplier", 1)
-    value_format = fmt.get("valueFormat", "{0}")
-    computed = round(value * multiplier, 2)
-    computed_str = str(int(computed)) if computed == int(computed) else str(computed)
-    return f"{name}: {value_format.replace('{0}', computed_str)}"
-
 
 class QuestlogClient(discord.Client):
     async def setup_hook(self) -> None:
@@ -183,109 +118,6 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
         await reply_ephemeral(interaction, ADMIN_REQUIRED_MESSAGE)
         return
     await report_interaction_error(interaction, command, getattr(error, "original", error))
-
-
-# ── API helpers ───────────────────────────────────────────────────────────────
-
-def api_get(endpoint: str, input_data: dict) -> dict | None:
-    try:
-        r = requests.get(
-            f"{BASE_URL}/{endpoint}",
-            params={"input": json.dumps(input_data, separators=(",", ":"))},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=API_TIMEOUT
-        )
-        r.raise_for_status()
-        return r.json()["result"]["data"]
-    except requests.exceptions.Timeout:
-        log.warning(f"API timeout [{endpoint}]")
-        return "timeout"
-    except Exception as e:
-        log.error(f"API error [{endpoint}]: {e}")
-        return None
-
-
-_search_cache = TTLCache(SEARCH_CACHE_TTL, SEARCH_CACHE_SIZE)
-
-
-def search_items(query: str) -> list[dict]:
-    """Autocomplete fires on every keystroke and several members often type the same names,
-    so successful lookups are cached. Failures are never cached: a transient API error must
-    not turn into a minute of empty suggestions. The key ignores case and extra spaces, which
-    the questlog search was checked not to care about."""
-    key = " ".join(query.split()).casefold()
-    cached = _search_cache.get(key)
-    if cached is not None:
-        return [dict(item) for item in cached]
-
-    data = api_get("database.getItems", {
-        "language": "en", "page": 1,
-        "searchTerm": query, "mainCategory": "", "subCategory": ""
-    })
-    if not data or data == "timeout":
-        return []
-    results = [
-        {"id": item["id"], "name": item["name"]}
-        for item in data.get("pageData", [])
-        if not item.get("isDisabled")
-    ][:25]
-    _search_cache.set(key, results)
-    return [dict(item) for item in results]
-
-
-def fetch_item(item_id: str) -> dict | str | None:
-    return api_get("database.getItem", {"id": item_id, "language": "en"})
-
-
-AH_REGION = "eu-f"
-
-
-def fetch_market(auction_house_id: int | None) -> dict | str | None:
-    """Current price of an item in AH_REGION, as {"minPrice": int | None, "inStock": int}.
-    questlog.gg indexes the auction house by the item's auctionHouseId (not its id), and
-    answers 400 for a null one, so items that can't be traded never reach the API.
-    Returns None / "timeout" like api_get when the lookup failed."""
-    if auction_house_id is None:
-        return {"minPrice": None, "inStock": 0}
-    data = api_get("auctionHouse.getItemMarket", {
-        "auctionHouseId": auction_house_id, "potentialAbilityId": None
-    })
-    if data is None or data == "timeout":
-        return data
-    current = (data.get("current") or {}).get(AH_REGION) or {}
-    return {"minPrice": current.get("minPrice"), "inStock": current.get("inStock") or 0}
-
-
-def fetch_market_for_item(item_id: str) -> dict | str | None:
-    """Blocking helper for callers that only know the item id: resolve its auctionHouseId, then its price."""
-    item = fetch_item(item_id)
-    if not isinstance(item, dict):
-        return item
-    return fetch_market(item.get("auctionHouseId"))
-
-
-def fetch_price_history(auction_house_id: int, days: int, now_ms: float | None = None) -> list[dict] | str | None:
-    """Price points for the last `days` days in AH_REGION, oldest first. Only periods that had
-    offers are present. Each raw point is [time_ms, min, max, avg, last, in_stock], where the
-    prices are the floor price sampled during that period.
-
-    The hourly ranges (7d, 30d, 90d) are all capped at 168 points, i.e. the last 7 days, so
-    anything longer is read from the daily "all" series and cut to the requested window."""
-    range_name = "7d" if days <= 7 else "all"
-    data = api_get("auctionHouse.getItemHistory", {
-        "auctionHouseId": auction_house_id, "potentialAbilityId": None, "range": range_name
-    })
-    if data is None or data == "timeout":
-        return data
-    raw = (data.get("series") or {}).get(AH_REGION) or []
-    points = [
-        {"time": p[0], "min": p[1], "max": p[2], "avg": p[3], "last": p[4], "stock": p[5]}
-        for p in raw if p and p[1] is not None
-    ]
-    if range_name == "all":
-        cutoff = (time.time() * 1000 if now_ms is None else now_ms) - days * 86_400_000
-        points = [point for point in points if point["time"] >= cutoff]
-    return sorted(points, key=lambda point: point["time"])
 
 
 # ── Guild config (per-server role restrictions for /item-loot) ────────────────
