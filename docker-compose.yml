@@ -6,7 +6,19 @@ services:
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
     volumes:
-      - questlog-data:/app/data
+      # Named volume by default; set QUESTLOG_DATA_PATH to a host folder
+      # (owned by 1000:1000) to bind-mount it instead, e.g. on Unraid.
+      - ${QUESTLOG_DATA_PATH:-questlog-data}:/app/data
+    # Set BOT_REPLICAS=0 to keep the stack deployed without connecting to
+    # Discord: never run two instances on the same token.
+    deploy:
+      replicas: ${BOT_REPLICAS:-1}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - net.unraid.docker.icon=https://cdn.jsdelivr.net/gh/DerpDerpFailer/Questlog-Item-Bot@main/icon/questlog-256.png
     logging:
       driver: json-file
       options:

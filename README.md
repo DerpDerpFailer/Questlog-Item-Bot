@@ -27,6 +27,20 @@ docker compose up -d
 Under Portainer, skip the `.env` file and set `DISCORD_TOKEN` in the stack's environment variables.
 Dependencies are pinned in `requirements.txt`; bump them deliberately and run the test suite below.
 
+The container runs as an unprivileged user (UID/GID 1000) with all capabilities dropped.
+
+### Unraid
+
+Deployed as a Portainer "Repository" stack named `questlog-bot` (GitOps off), with these stack variables:
+
+| Variable | Value |
+|---|---|
+| `DISCORD_TOKEN` | the bot token |
+| `QUESTLOG_DATA_PATH` | `/mnt/user/appdata/questlog-bot/data` (create it and `chown -R 1000:1000` it first) |
+| `BOT_REPLICAS` | `1` (`0` keeps the stack deployed but offline, so two instances never share the token) |
+
+The Docker tab icon comes from `icon/questlog-256.png` via jsDelivr. To change it, add a file with a new name (jsDelivr caches `@main` for up to 7 days).
+
 ## 📋 Commands
 
 | Command | Description |
@@ -43,7 +57,7 @@ Dependencies are pinned in `requirements.txt`; bump them deliberately and run th
 
 ## 💾 Data, backup & restore
 
-Per-server settings (roles, log channels, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`). Loot sign-ups are **not** stored there: they live in the Discord messages themselves.
+Per-server settings (roles, log channels, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`), or in the host folder set by `QUESTLOG_DATA_PATH`. Loot sign-ups are **not** stored there: they live in the Discord messages themselves.
 
 **Back up** — Portainer → Containers → `questlog-bot` → Console → `/bin/sh`, then save the output:
 
@@ -59,7 +73,7 @@ cat > /app/data/<guild_id>.json << 'EOF'
 EOF
 ```
 
-With a shell on the Docker host, `docker cp questlog-bot:/app/data ./backup` and `docker cp ./backup/. questlog-bot:/app/data/` do the same.
+With a shell on the Docker host, `docker cp questlog-bot:/app/data ./backup` and `docker cp ./backup/. questlog-bot:/app/data/` do the same; files restored with `docker cp` or copied into a bind-mounted folder must end up owned by `1000:1000`.
 
 **Upgrading from the old `./data` bind mount:** the named volume starts empty and Docker does not copy the old directory. Back up first, redeploy, then restore. Until restored, the sign-up buttons refuse clicks and `/item-loot` is blocked; re-running `/item-setup` is the fallback. The old directory is left untouched on the host.
 
