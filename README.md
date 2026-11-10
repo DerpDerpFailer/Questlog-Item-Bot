@@ -75,6 +75,14 @@ EOF
 
 With a shell on the Docker host, `docker cp questlog-bot:/app/data ./backup` and `docker cp ./backup/. questlog-bot:/app/data/` do the same; files restored with `docker cp` or copied into a bind-mounted folder must end up owned by `1000:1000`.
 
+**Unraid** — `scripts/restore-questlog-data-unraid.sh` restores from the latest Appdata Backup archive (or `--backup ab_…`, or `--from-dir <folder>`), validates the JSON, stops the bot, snapshots the current data, copies, fixes ownership, checks checksums and restarts the bot. Dry-run unless `--apply`; run it from a machine with SSH access, nothing is installed on the host:
+
+```bash
+ssh root@192.168.1.240 'bash -s -- --help' < scripts/restore-questlog-data-unraid.sh
+ssh root@192.168.1.240 'bash -s --' < scripts/restore-questlog-data-unraid.sh            # dry-run, latest backup
+ssh root@192.168.1.240 'bash -s -- --apply' < scripts/restore-questlog-data-unraid.sh    # restore
+```
+
 **Upgrading from the old `./data` bind mount:** the named volume starts empty and Docker does not copy the old directory. Back up first, redeploy, then restore. Until restored, the sign-up buttons refuse clicks and `/item-loot` is blocked; re-running `/item-setup` is the fallback. The old directory is left untouched on the host.
 
 ## 🧪 Tests
