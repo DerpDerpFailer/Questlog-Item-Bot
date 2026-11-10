@@ -16,6 +16,15 @@ A Discord bot to look up Throne & Liberty items directly in your server, powered
 
 **Prerequisites:** Docker & Docker Compose + a Discord bot token
 
+**Discord application:** invite the bot with the `bot` and `applications.commands` scopes and the permissions integer `18432`:
+
+| Permission | Why |
+|---|---|
+| Send Messages | post the distribution reports and the weekly wishlist cleanup reports in the configured log channels |
+| Embed Links | those reports are embeds |
+
+No privileged intent is needed (default intents only). Slash command replies go through the interaction itself, and the bot only deletes its own `/item-loot` posts, so no other permission is required. If a log channel is private, also give the bot View Channel there (it is not part of `18432`).
+
 ```bash
 git clone https://github.com/DerpDerpFailer/Questlog-Item-Bot.git
 cd Questlog-Item-Bot
