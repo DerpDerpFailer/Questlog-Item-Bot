@@ -19,9 +19,11 @@ LOOT_CATEGORIES = [
     ("greed", "Greed", "loot_greed"),
 ]
 LOOT_STATE_CACHE_SIZE = 500
-# Optional staff note on a loot post (e.g. "Only for DD"), kept under the 1024-char embed field limit.
+# Optional staff note on a loot post (e.g. "Only for DD"), sent as the message content above the embed.
+# The field name only exists on posts made before that (it used to be an embed field).
 LOOT_NOTE_FIELD_NAME = "📝 Note"
 LOOT_NOTE_MAX_CHARS = 1000
+MESSAGE_MAX_CHARS = 2000
 
 
 def format_loot_field(state: dict[str, list[int]]) -> str:
@@ -40,6 +42,44 @@ def parse_loot_field(value: str) -> dict[str, list[int]]:
             if line.startswith(f"**{label}:**"):
                 state[key] = [int(i) for i in re.findall(r"<@!?(\d+)>", line)]
     return state
+
+
+
+# ── Mentions typed in the /item-loot note: a modal is plain text, so "@Name" has to be resolved by the bot.
+
+# "@token" not preceded by "<" (already a raw mention) or a word char (e-mail addresses).
+MENTION_TOKEN = re.compile(r"(?<![<\w])@([\w.\-]+)")
+NEVER_PINGED = {"everyone", "here"}
+
+
+def replace_role_mentions(text: str, roles: list[tuple[int, str]]) -> tuple[str, list[int]]:
+    """Turn "@Role Name" (exact name, case-insensitive, spaces allowed) into <@&id>.
+    Longest names first, so "@Raid Lead" wins over "@Raid"."""
+    found = []
+    for role_id, name in sorted(roles, key=lambda r: len(r[1]), reverse=True):
+        if not name or name.lstrip("@").casefold() in NEVER_PINGED:
+            continue
+        pattern = re.compile(r"(?<![<\w])@" + re.escape(name) + r"(?!\w)", re.IGNORECASE)
+        text, count = pattern.subn(f"<@&{role_id}>", text)
+        if count:
+            found.append(role_id)
+    return text, found
+
+
+def member_mention_tokens(text: str) -> list[str]:
+    """The remaining "@word" tokens to look up as members, in order, without duplicates."""
+    tokens = []
+    for token in MENTION_TOKEN.findall(text):
+        if token.casefold() not in NEVER_PINGED and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def replace_member_mentions(text: str, resolved: dict[str, int]) -> str:
+    def swap(match: re.Match) -> str:
+        user_id = resolved.get(match.group(1))
+        return f"<@{user_id}>" if user_id is not None else match.group(0)
+    return MENTION_TOKEN.sub(swap, text)
 
 
 def toggle_loot_signup(state: dict[str, list[int]], user_id: int, category_key: str) -> dict[str, list[int]]:

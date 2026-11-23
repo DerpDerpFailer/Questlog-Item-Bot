@@ -104,7 +104,7 @@ class FakeClick:
         self._server = server
         self.guild_id = 1
         self.user = types.SimpleNamespace(id=user_id, name=f"user{user_id}", mention=f"<@{user_id}>")
-        self.message = types.SimpleNamespace(id=server.id, embeds=[deep_copy_embed(server.embed)])
+        self.message = types.SimpleNamespace(id=server.id, content="", embeds=[deep_copy_embed(server.embed)])
         self.response = FakeResponse()
         self.followup = FakeFollowup(server)
 

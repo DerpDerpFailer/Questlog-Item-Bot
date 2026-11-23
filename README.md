@@ -57,7 +57,7 @@ The Docker tab icon comes from `icon/questlog-256.png` via jsDelivr. To change i
 |---|---|
 | `/item <name>` | Search for an item by name with autocomplete |
 | `/price <name> [days]` | Auction House price history (EU) — 7 or 30 days |
-| `/item-loot <name>` | Opens a pop-up for an optional note (e.g. "Only for DD"), then posts the same embed as `/item`, plus Main PvP / Main PvE / Alternate Build / Greed sign-up buttons, a "Roll" button and a "Distributed" button (restricted roles, see `/item-setup`) |
+| `/item-loot <name>` | Opens a pop-up for an optional note (e.g. "Only for DD", `@Role` / `@member` mentions are resolved and pinged), then posts the same embed as `/item`, plus Main PvP / Main PvE / Alternate Build / Greed sign-up buttons, a "Roll" button and a "Distributed" button (restricted roles, see `/item-setup`) |
 | `/item-setup [command_role] [button_role] [log_channel] [reroll] [roll_ping]` | Admin only — configure which role can run `/item-loot`/roll/mark items distributed, which role can click the sign-up buttons, the channel where distribution reports are posted, whether an already-rolled item can be re-rolled (default: no) and who the roll announcement pings (`Nobody` / `Winners only`, the default / `All participants`) |
 | `/wishlist [name]` | Add an item to your wishlist, or view/edit your current wishlist if no name is given |
 | `/wishlist-setup [limit] [role_staff] [log_channel]` | Admin only — configure the max wishlist size per member (1-25), the staff role for `/wishlist-check`/`/wishlist-export`/`/wishlist-clean`, and/or the channel where weekly auto-cleanup reports are posted |
@@ -67,7 +67,7 @@ The Docker tab icon comes from `icon/questlog-256.png` via jsDelivr. To change i
 
 ## 🎲 Loot workflow
 
-1. **Post** — a member of the command role runs `/item-loot <item>`. A pop-up opens for an optional note (e.g. "Only for DD, healers can't need this item"): Submit with text shows it in a `📝 Note` field above the sign-ups, Submit empty posts without it. Closing the pop-up cancels the post.
+1. **Post** — a member of the command role runs `/item-loot <item>`. A pop-up opens for an optional note (e.g. "Only for DD, healers can't need this item"), shown as the message text above the embed; Submit empty posts without it, closing the pop-up cancels the post. The pop-up is plain text, so the bot resolves mentions itself: `@Role Name` (exact role name, spaces allowed) and `@username` / `@nickname` (exact, no spaces) become real pings; anything not found stays plain text and is listed in the private confirmation. `@everyone` / `@here` never ping. A role only notifies if it is mentionable, or if the bot has "Mention @everyone, @here and All Roles" (the confirmation warns otherwise). Errors such as an unknown item are now private.
 2. **Sign up** — members of the button role pick Main PvP, Main PvE, Alternate Build or Greed. The choice is exclusive (picking another category moves you) and clicking your current category again removes you.
 3. **Roll** — a member of the command role clicks 🎲 Roll (refused while nobody has signed up):
    - every sign-up gets a 1-100 roll, compared only with the other sign-ups of the same category; a tie for first place is re-rolled between the tied members only, shown as `65 → 12`

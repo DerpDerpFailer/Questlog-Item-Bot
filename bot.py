@@ -19,11 +19,13 @@ from questlog.api import (
     search_items,
 )
 from questlog.domain import (
+    EMBED_FIELD_MAX_CHARS,
     LOOT_CATEGORIES,
     LOOT_FIELD_NAME,
     LOOT_NOTE_FIELD_NAME,
     LOOT_NOTE_MAX_CHARS,
     LOOT_ROLL_FIELD_NAME,
+    MESSAGE_MAX_CHARS,
     ROLL_REASON_MAX_CHARS,
     LootStateStore,
     compute_price_stats,
@@ -31,8 +33,11 @@ from questlog.domain import (
     format_current_price,
     format_loot_field,
     is_listed,
+    member_mention_tokens,
     format_roll_field,
     parse_loot_field,
+    replace_member_mentions,
+    replace_role_mentions,
     roll_loot,
     roll_winner,
     roll_ping_targets,
@@ -397,8 +402,10 @@ class LootView(ErrorReportingView):
         item_id = item_url.rsplit("/", 1)[-1] if item_url else None
         item_thumbnail = item_embed.thumbnail.url if item_embed.thumbnail else None
         roll = current_roll(LOOT_STATES.entry(interaction.message.id), item_embed)
-        note_index = field_index(item_embed, LOOT_NOTE_FIELD_NAME)
-        loot_note = item_embed.fields[note_index].value if note_index is not None else None
+        loot_note = interaction.message.content or None
+        if loot_note is None:  # posts made while the note was still an embed field
+            note_index = field_index(item_embed, LOOT_NOTE_FIELD_NAME)
+            loot_note = item_embed.fields[note_index].value if note_index is not None else None
 
         view = LootDistributeView(
             guild_id, interaction.message, item_name, item_url, item_id, item_thumbnail, roll, loot_note
@@ -574,7 +581,10 @@ class LootNoteModal(ErrorReportingModal):
         embed.add_field(name="Distributed by", value=interaction.user.mention, inline=True)
         embed.add_field(name="Current Price", value=format_current_price(ah), inline=True)
         if self.loot_note:
-            embed.add_field(name="Loot note", value=self.loot_note, inline=False)
+            loot_note = self.loot_note
+            if len(loot_note) > EMBED_FIELD_MAX_CHARS:  # message content allows 2000, a field 1024
+                loot_note = loot_note[:EMBED_FIELD_MAX_CHARS - 1] + "…"
+            embed.add_field(name="Loot note", value=loot_note, inline=False)
         if self.note.value:
             embed.add_field(name="Note", value=self.note.value, inline=False)
         if self.roll:
@@ -969,13 +979,68 @@ class LootPostModal(ErrorReportingModal):
         self.item_name = item_name
 
     async def on_submit(self, interaction: discord.Interaction):
-        # The modal comes from a slash command: without thinking=True, defer() would try to
-        # update a message that doesn't exist.
-        await interaction.response.defer(thinking=True)
+        # Ephemeral "thinking": the post itself is sent later as a new followup message, because
+        # mentions only notify on a new message, not when a deferred response is filled in.
+        # (Without thinking=True, a modal_submit defer() would try to update a non-existent message.)
+        await interaction.response.defer(thinking=True, ephemeral=True)
         await post_loot(interaction, self.item_name, self.note.value.strip())
 
 
+async def resolve_member_token(guild: discord.Guild, token: str) -> int | None:
+    """Exact (case-insensitive) username, nickname or display name; None if absent or ambiguous.
+    A gateway query by name prefix needs no privileged intent."""
+    try:
+        members = await guild.query_members(query=token, limit=10)
+    except (asyncio.TimeoutError, discord.ClientException, discord.HTTPException) as e:
+        log.warning(f"Member lookup failed for '@{token}': {e}")
+        return None
+    wanted = token.casefold()
+    matches = {
+        m.id for m in members
+        if wanted in {m.name.casefold(), m.display_name.casefold(), (m.global_name or "").casefold()}
+    }
+    return matches.pop() if len(matches) == 1 else None
+
+
+async def resolve_note_mentions(
+    interaction: discord.Interaction, note: str
+) -> tuple[str, discord.AllowedMentions, list[str]]:
+    """Returns the note with @mentions resolved, what it may ping, and warnings for the staff."""
+    guild = interaction.guild
+    roles = [(r.id, r.name) for r in guild.roles if not r.is_default()]
+    text, role_ids = replace_role_mentions(note, roles)
+    resolved = {}
+    for token in member_mention_tokens(text):
+        user_id = await resolve_member_token(guild, token)
+        if user_id is not None:
+            resolved[token] = user_id
+    text = replace_member_mentions(text, resolved)
+
+    warnings = []
+    missing = [t for t in member_mention_tokens(text) if t not in resolved]
+    if missing:
+        warnings.append(
+            "⚠️ Not found, left as plain text: " + ", ".join(f"`@{t}`" for t in missing)
+            + " (use the exact username, nickname or role name)."
+        )
+    can_ping_any_role = interaction.app_permissions.mention_everyone
+    silent = [guild.get_role(i) for i in role_ids]
+    silent = [r for r in silent if r is not None and not r.mentionable and not can_ping_any_role]
+    if silent:
+        warnings.append(
+            "⚠️ Shown but nobody notified (role not mentionable): " + ", ".join(r.mention for r in silent)
+        )
+    allowed = discord.AllowedMentions(
+        everyone=False,
+        users=[discord.Object(i) for i in resolved.values()],
+        roles=[discord.Object(i) for i in role_ids],
+    )
+    return text, allowed, warnings
+
+
 async def post_loot(interaction: discord.Interaction, item_name: str, note: str):
+    """Runs after an ephemeral deferred response: errors and the confirmation stay ephemeral,
+    the loot post is a separate public followup."""
     user = f"{interaction.user.name} ({interaction.user.id})"
 
     loop = asyncio.get_event_loop()
@@ -983,26 +1048,37 @@ async def post_loot(interaction: discord.Interaction, item_name: str, note: str)
 
     if item == "timeout":
         log.info(f"[TIMEOUT/loot] {user} requested '{item_name}'")
-        await interaction.followup.send("⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds.")
+        await interaction.edit_original_response(
+            content="⏱️ questlog.gg is taking too long to respond. Please try again in a few seconds."
+        )
         return
 
     if not item:
         log.info(f"[NOT FOUND/loot] {user} requested '{item_name}'")
-        await interaction.followup.send(
-            f"❌ Item not found: `{item_name}`\n"
-            "💡 Use autocomplete to select an item from the list."
+        await interaction.edit_original_response(
+            content=f"❌ Item not found: `{item_name}`\n💡 Use autocomplete to select an item from the list."
         )
         return
 
+    content, allowed, warnings = None, discord.AllowedMentions.none(), []
+    if note:
+        content, allowed, warnings = await resolve_note_mentions(interaction, note)
+        if len(content) > MESSAGE_MAX_CHARS:
+            await interaction.edit_original_response(
+                content="❌ The note is too long once mentions are resolved. Nothing was posted."
+            )
+            return
+
     ah = await loop.run_in_executor(None, fetch_market, item.get("auctionHouseId"))
-    note_suffix = f" note={note!r}" if note else ""
+    note_suffix = f" note={content!r}" if content else ""
     log.info(f"[LOOT] {user} → {item.get('name')} ({item.get('id')}){note_suffix}")
     embed = build_embed(item, ah)
-    if note:
-        embed.add_field(name=LOOT_NOTE_FIELD_NAME, value=note, inline=False)
     empty_state = {key: [] for key, _, _ in LOOT_CATEGORIES}
     embed.add_field(name=LOOT_FIELD_NAME, value=format_loot_field(empty_state), inline=False)
-    await interaction.followup.send(embed=embed, view=LootView())
+
+    # The deferred response must be filled first, otherwise the post would replace it (and be ephemeral).
+    await interaction.edit_original_response(content="\n".join([f"✅ Posted **{item.get('name')}**."] + warnings))
+    await interaction.followup.send(content=content, embed=embed, view=LootView(), allowed_mentions=allowed)
 
 
 # ── Slash command /item-setup ─────────────────────────────────────────────────

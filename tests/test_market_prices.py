@@ -268,6 +268,10 @@ def test_item_loot_shows_the_price_too(monkeypatch):
     monkeypatch.setattr(bot, "fetch_market", lambda ahid: {"minPrice": 1298, "inStock": 9})
     interaction = FakeInteraction()
 
+    async def edit_original_response(**kwargs):
+        pass
+
+    interaction.edit_original_response = edit_original_response
     # The command only opens the note modal; the post itself is built by post_loot on submit.
     asyncio.run(bot.post_loot(interaction, ITEM["id"], ""))
 
