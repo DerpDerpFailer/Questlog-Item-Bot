@@ -19,6 +19,9 @@ LOOT_CATEGORIES = [
     ("greed", "Greed", "loot_greed"),
 ]
 LOOT_STATE_CACHE_SIZE = 500
+# Optional staff note on a loot post (e.g. "Only for DD"), kept under the 1024-char embed field limit.
+LOOT_NOTE_FIELD_NAME = "📝 Note"
+LOOT_NOTE_MAX_CHARS = 1000
 
 
 def format_loot_field(state: dict[str, list[int]]) -> str:

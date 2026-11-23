@@ -21,6 +21,8 @@ from questlog.api import (
 from questlog.domain import (
     LOOT_CATEGORIES,
     LOOT_FIELD_NAME,
+    LOOT_NOTE_FIELD_NAME,
+    LOOT_NOTE_MAX_CHARS,
     LOOT_ROLL_FIELD_NAME,
     ROLL_REASON_MAX_CHARS,
     LootStateStore,
@@ -395,8 +397,12 @@ class LootView(ErrorReportingView):
         item_id = item_url.rsplit("/", 1)[-1] if item_url else None
         item_thumbnail = item_embed.thumbnail.url if item_embed.thumbnail else None
         roll = current_roll(LOOT_STATES.entry(interaction.message.id), item_embed)
+        note_index = field_index(item_embed, LOOT_NOTE_FIELD_NAME)
+        loot_note = item_embed.fields[note_index].value if note_index is not None else None
 
-        view = LootDistributeView(guild_id, interaction.message, item_name, item_url, item_id, item_thumbnail, roll)
+        view = LootDistributeView(
+            guild_id, interaction.message, item_name, item_url, item_id, item_thumbnail, roll, loot_note
+        )
         await interaction.response.send_message(f"Who received **{item_name}**?", view=view, ephemeral=True)
 
 
@@ -490,7 +496,8 @@ class LootDistributeView(ErrorReportingView):
         item_url: str | None,
         item_id: str | None,
         item_thumbnail: str | None,
-        roll: str | None = None
+        roll: str | None = None,
+        loot_note: str | None = None
     ):
         super().__init__(timeout=300)
         self.guild_id = guild_id
@@ -502,13 +509,14 @@ class LootDistributeView(ErrorReportingView):
         # No pre-selected recipient: a select only fires when its value changes, so a pre-selected
         # winner could not be confirmed as is. The roll is only carried into the report.
         self.roll = roll
+        self.loot_note = loot_note
 
     @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Who received this item?", min_values=1, max_values=1)
     async def select_recipient(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         recipient = select.values[0]
         modal = LootNoteModal(
             self.guild_id, self.source_message, self.item_name, self.item_url, self.item_id,
-            self.item_thumbnail, recipient, self.roll
+            self.item_thumbnail, recipient, self.roll, self.loot_note
         )
         await interaction.response.send_modal(modal)
 
@@ -531,10 +539,12 @@ class LootNoteModal(ErrorReportingModal):
         item_id: str | None,
         item_thumbnail: str | None,
         recipient: discord.abc.User,
-        roll: str | None = None
+        roll: str | None = None,
+        loot_note: str | None = None
     ):
         super().__init__(title=f"Distribute: {item_name}"[:45])
         self.roll = roll
+        self.loot_note = loot_note
         self.guild_id = guild_id
         self.source_message = source_message
         self.item_name = item_name
@@ -563,6 +573,8 @@ class LootNoteModal(ErrorReportingModal):
         embed.add_field(name="Distributed to", value=self.recipient.mention, inline=True)
         embed.add_field(name="Distributed by", value=interaction.user.mention, inline=True)
         embed.add_field(name="Current Price", value=format_current_price(ah), inline=True)
+        if self.loot_note:
+            embed.add_field(name="Loot note", value=self.loot_note, inline=False)
         if self.note.value:
             embed.add_field(name="Note", value=self.note.value, inline=False)
         if self.roll:
@@ -918,7 +930,6 @@ async def price_command(interaction: discord.Interaction, item_name: str, days: 
 @tree.command(name="item-loot", description="Search a T&L item and track loot interest (Main PvP / Main PvE / Alternate Build)")
 @app_commands.describe(item_name="Start typing the item name...")
 async def item_loot_command(interaction: discord.Interaction, item_name: str):
-    user = f"{interaction.user.name} ({interaction.user.id})"
     guild_id = interaction.guild_id
 
     if not guild_id:
@@ -939,7 +950,33 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
         await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
         return
 
-    await interaction.response.defer()
+    # A modal can only be the first response, so it opens before the item lookup.
+    await interaction.response.send_modal(LootPostModal(item_name))
+
+
+class LootPostModal(ErrorReportingModal):
+    note = discord.ui.TextInput(
+        label="Note (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=LOOT_NOTE_MAX_CHARS,
+        placeholder="e.g. Only for DD, healers can't need this item"
+    )
+
+    def __init__(self, item_name: str):
+        # item_name is usually the autocomplete value, i.e. an internal id: not shown in the title.
+        super().__init__(title="Post loot")
+        self.item_name = item_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # The modal comes from a slash command: without thinking=True, defer() would try to
+        # update a message that doesn't exist.
+        await interaction.response.defer(thinking=True)
+        await post_loot(interaction, self.item_name, self.note.value.strip())
+
+
+async def post_loot(interaction: discord.Interaction, item_name: str, note: str):
+    user = f"{interaction.user.name} ({interaction.user.id})"
 
     loop = asyncio.get_event_loop()
     item = await loop.run_in_executor(None, fetch_item, item_name)
@@ -958,8 +995,11 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
         return
 
     ah = await loop.run_in_executor(None, fetch_market, item.get("auctionHouseId"))
-    log.info(f"[LOOT] {user} → {item.get('name')} ({item.get('id')})")
+    note_suffix = f" note={note!r}" if note else ""
+    log.info(f"[LOOT] {user} → {item.get('name')} ({item.get('id')}){note_suffix}")
     embed = build_embed(item, ah)
+    if note:
+        embed.add_field(name=LOOT_NOTE_FIELD_NAME, value=note, inline=False)
     empty_state = {key: [] for key, _, _ in LOOT_CATEGORIES}
     embed.add_field(name=LOOT_FIELD_NAME, value=format_loot_field(empty_state), inline=False)
     await interaction.followup.send(embed=embed, view=LootView())

@@ -268,7 +268,8 @@ def test_item_loot_shows_the_price_too(monkeypatch):
     monkeypatch.setattr(bot, "fetch_market", lambda ahid: {"minPrice": 1298, "inStock": 9})
     interaction = FakeInteraction()
 
-    asyncio.run(bot.item_loot_command.callback(interaction, ITEM["id"]))
+    # The command only opens the note modal; the post itself is built by post_loot on submit.
+    asyncio.run(bot.post_loot(interaction, ITEM["id"], ""))
 
     assert "🏪 **1 298 ◈** ×9" in interaction.followup.sent[0]["embed"].description
 
