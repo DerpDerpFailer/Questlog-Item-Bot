@@ -176,23 +176,6 @@ def test_the_field_shows_scores_and_winners_and_reads_back():
     assert domain.parse_roll_field(value) == {"winners": {"pvp": 2, "greed": 9}, "rolled_by": 7, "rolled_at": 1700000000}
 
 
-@pytest.mark.parametrize("signups, expected", [
-    ({"pvp": [1], "pve": [2], "greed": [3]}, 1),
-    ({"pve": [2], "greed": [3]}, 2),
-    ({"alt": [4], "greed": [3]}, 4),
-    ({"greed": [3]}, 3),
-])
-def test_the_preselected_winner_follows_the_category_priority(signups, expected):
-    result = domain.roll_loot(signups, dice(*range(1, 10)))
-    value = domain.format_roll_field(result, rolled_by=7, rolled_at=1)
-
-    assert domain.preselected_winner(value) == expected
-
-
-def test_no_roll_means_no_preselection():
-    assert domain.preselected_winner(None) is None
-
-
 def test_a_reroll_keeps_its_reason_and_only_the_roll_it_replaces():
     first = domain.format_roll_field(domain.roll_loot({"pvp": [1, 2]}, dice(90, 10)), rolled_by=7, rolled_at=100)
     second = domain.format_roll_field(
@@ -419,7 +402,7 @@ def test_a_reason_cannot_ping_everyone(monkeypatch):
 
 # ── Distribution ──────────────────────────────────────────────────────────────
 
-def test_distributed_preselects_the_top_priority_winner(monkeypatch):
+def test_distributed_preselects_nobody_but_carries_the_roll(monkeypatch):
     server = FakeServerMessage(signups={"pve": [4, 5], "greed": [9]})
     roll(server, 12, 87, 50, monkeypatch=monkeypatch)
 
@@ -427,19 +410,8 @@ def test_distributed_preselects_the_top_priority_winner(monkeypatch):
     asyncio.run(press(interaction, "distributed_button"))
 
     [view] = interaction.response.views
-    assert [v.id for v in view.select_recipient.default_values] == [5]
-    assert view.roll == server.field(domain.LOOT_ROLL_FIELD_NAME)
-
-
-def test_distributed_without_a_roll_preselects_nobody():
-    server = FakeServerMessage(signups={"pvp": [1]})
-
-    interaction = FakeClick(server, 7)
-    asyncio.run(press(interaction, "distributed_button"))
-
-    [view] = interaction.response.views
     assert view.select_recipient.default_values == []
-    assert view.roll is None
+    assert view.roll == server.field(domain.LOOT_ROLL_FIELD_NAME)
 
 
 def test_the_distribution_report_carries_the_roll(monkeypatch):

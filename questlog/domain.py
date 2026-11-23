@@ -49,8 +49,7 @@ def toggle_loot_signup(state: dict[str, list[int]], user_id: int, category_key: 
 
 
 # ── Roll for /item-loot: one 1-100 draw per category, among that category's sign-ups only.
-# The staff still decides who gets the item; category order (LOOT_CATEGORIES) is only the display
-# order and picks which winner is pre-selected in the Distributed flow.
+# The staff still decides who gets the item; category order (LOOT_CATEGORIES) is only the display order.
 
 LOOT_ROLL_FIELD_NAME = "🎲 Roll"
 LOOT_ROLL_MAX = 100
@@ -140,8 +139,8 @@ _ROLLED_BY_RE = re.compile(r"^(?:Re-r|R)olled by <@!?(\d+)> <t:(\d+):f>")
 
 
 def parse_roll_field(value: str) -> dict:
-    """Winners per category, plus who rolled and when — enough to pre-select the winner and to
-    summarize this roll as the "previous" one after a re-roll."""
+    """Winners per category, plus who rolled and when — enough to summarize this roll as the
+    "previous" one after a re-roll."""
     winners: dict[str, int] = {}
     rolled_by = rolled_at = None
     for line in value.split("\n"):
@@ -154,14 +153,6 @@ def parse_roll_field(value: str) -> dict:
         if match:
             rolled_by, rolled_at = int(match.group(1)), int(match.group(2))
     return {"winners": winners, "rolled_by": rolled_by, "rolled_at": rolled_at}
-
-
-def preselected_winner(roll_value: str | None) -> int | None:
-    """Winner of the highest-priority category that has one (Main PvP > Main PvE > Alt > Greed)."""
-    if not roll_value:
-        return None
-    winners = parse_roll_field(roll_value)["winners"]
-    return next((winners[key] for key, _, _ in LOOT_CATEGORIES if key in winners), None)
 
 
 def roll_ping_targets(result: RollResult, mode: str) -> list[int]:

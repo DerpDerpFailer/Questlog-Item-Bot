@@ -10,7 +10,7 @@ A Discord bot to look up Throne & Liberty items directly in your server, powered
 - **EU Auction House prices** — min price and stock in real time
 - **Price history** — 7/30 day price trend, average, min/max and stock
 - **Loot tracking** — role-gated Main PvP / Main PvE / Alternate Build / Greed sign-up per item, a staff "Roll" button, plus a "Distributed" button to pick a recipient, log the distribution, and clean up the post
-- **Loot roll** — one click rolls 1-100 for every sign-up, separately in each category (ties for first are re-rolled), shows each category's winner on the post, closes the sign-ups and pings the winners or every participant; the staff still decides who gets the item. The Main PvP > Main PvE > Alternate Build > Greed order only decides which winner is pre-selected when marking the item distributed. Optional re-roll with a mandatory reason, kept on the post and in the distribution report
+- **Loot roll** — one click rolls 1-100 for every sign-up, separately in each category (ties for first are re-rolled), shows each category's winner on the post, closes the sign-ups and pings the winners or every participant; the staff still decides who gets the item. Categories are listed in Main PvP > Main PvE > Alternate Build > Greed order. Optional re-roll with a mandatory reason, kept on the post and in the distribution report
 - **Loot wishlist** — each member can wishlist up to a configurable number of items per server, staff can check/export who wants what, and stale entries from members who left are cleaned up automatically every week
 
 ## 🚀 Deployment

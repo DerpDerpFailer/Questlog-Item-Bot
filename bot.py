@@ -31,7 +31,6 @@ from questlog.domain import (
     is_listed,
     format_roll_field,
     parse_loot_field,
-    preselected_winner,
     roll_loot,
     roll_winner,
     roll_ping_targets,
@@ -500,10 +499,9 @@ class LootDistributeView(ErrorReportingView):
         self.item_url = item_url
         self.item_id = item_id
         self.item_thumbnail = item_thumbnail
+        # No pre-selected recipient: a select only fires when its value changes, so a pre-selected
+        # winner could not be confirmed as is. The roll is only carried into the report.
         self.roll = roll
-        winner = preselected_winner(roll)
-        if winner is not None:
-            self.select_recipient.default_values = [discord.Object(id=winner)]
 
     @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Who received this item?", min_values=1, max_values=1)
     async def select_recipient(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
