@@ -114,6 +114,10 @@ def test_item_loot_opens_the_note_modal_before_any_lookup(monkeypatch):
     assert interaction.response.deferred == []
 
 
+def test_the_note_placeholder_fits_discords_limit():
+    assert len(bot.LootPostModal("x").note.placeholder) <= 100
+
+
 def test_item_loot_refuses_without_the_command_role_and_opens_nothing(monkeypatch):
     monkeypatch.setattr(bot, "has_role", lambda member, role_id: False)
     interaction = make_interaction()

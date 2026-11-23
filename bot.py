@@ -970,7 +970,8 @@ class LootPostModal(ErrorReportingModal):
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=LOOT_NOTE_MAX_CHARS,
-        placeholder="e.g. Only for DD, healers can't need this item"
+        # A paragraph input renders the newline; Discord caps placeholders at 100 chars.
+        placeholder="e.g. Only DD, healers can't need this item\ne.g. To ping a role, use @Member"
     )
 
     def __init__(self, item_name: str):
