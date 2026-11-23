@@ -9,7 +9,8 @@ A Discord bot to look up Throne & Liberty items directly in your server, powered
 - **Unique skill** — skill name and full description
 - **EU Auction House prices** — min price and stock in real time
 - **Price history** — 7/30 day price trend, average, min/max and stock
-- **Loot tracking** — role-gated Main PvP / Main PvE / Alternate Build / Greed sign-up per item, plus a "Distributed" button to pick a recipient, log the distribution, and clean up the post
+- **Loot tracking** — role-gated Main PvP / Main PvE / Alternate Build / Greed sign-up per item, a staff "Roll" button, plus a "Distributed" button to pick a recipient, log the distribution, and clean up the post
+- **Loot roll** — one click rolls 1-100 for every sign-up, separately in each category (ties for first are re-rolled), shows each category's winner on the post, closes the sign-ups and pings the winners or every participant; the staff still decides who gets the item. The Main PvP > Main PvE > Alternate Build > Greed order only decides which winner is pre-selected when marking the item distributed. Optional re-roll with a mandatory reason, kept on the post and in the distribution report
 - **Loot wishlist** — each member can wishlist up to a configurable number of items per server, staff can check/export who wants what, and stale entries from members who left are cleaned up automatically every week
 
 ## 🚀 Deployment
@@ -56,8 +57,8 @@ The Docker tab icon comes from `icon/questlog-256.png` via jsDelivr. To change i
 |---|---|
 | `/item <name>` | Search for an item by name with autocomplete |
 | `/price <name> [days]` | Auction House price history (EU) — 7 or 30 days |
-| `/item-loot <name>` | Same as `/item`, plus Main PvP / Main PvE / Alternate Build / Greed sign-up buttons and a "Distributed" button (restricted roles, see `/item-setup`) |
-| `/item-setup [command_role] [button_role] [log_channel]` | Admin only — configure which role can run `/item-loot`/mark items distributed, which role can click the sign-up buttons, and/or the channel where distribution reports are posted |
+| `/item-loot <name>` | Same as `/item`, plus Main PvP / Main PvE / Alternate Build / Greed sign-up buttons, a "Roll" button and a "Distributed" button (restricted roles, see `/item-setup`) |
+| `/item-setup [command_role] [button_role] [log_channel] [reroll] [roll_ping]` | Admin only — configure which role can run `/item-loot`/roll/mark items distributed, which role can click the sign-up buttons, the channel where distribution reports are posted, whether an already-rolled item can be re-rolled (default: no) and who the roll announcement pings (`Nobody` / `Winners only`, the default / `All participants`) |
 | `/wishlist [name]` | Add an item to your wishlist, or view/edit your current wishlist if no name is given |
 | `/wishlist-setup [limit] [role_staff] [log_channel]` | Admin only — configure the max wishlist size per member (1-25), the staff role for `/wishlist-check`/`/wishlist-export`/`/wishlist-clean`, and/or the channel where weekly auto-cleanup reports are posted |
 | `/wishlist-check <name>` | Staff only — list every member who has this item in their wishlist |
@@ -66,7 +67,7 @@ The Docker tab icon comes from `icon/questlog-256.png` via jsDelivr. To change i
 
 ## 💾 Data, backup & restore
 
-Per-server settings (roles, log channels, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`), or in the host folder set by `QUESTLOG_DATA_PATH`. Loot sign-ups are **not** stored there: they live in the Discord messages themselves.
+Per-server settings (roles, log channels, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`), or in the host folder set by `QUESTLOG_DATA_PATH`. Loot sign-ups and roll results are **not** stored there: they live in the Discord messages themselves.
 
 **Back up** — Portainer → Containers → `questlog-bot` → Console → `/bin/sh`, then save the output:
 
