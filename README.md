@@ -24,7 +24,7 @@ A Discord bot to look up Throne & Liberty items directly in your server, powered
 | Send Messages | post the distribution reports and the weekly wishlist cleanup reports in the configured log channels |
 | Embed Links | those reports are embeds |
 
-No privileged intent is needed (default intents only). Slash command replies go through the interaction itself, and the bot only deletes its own `/item-loot` posts, so no other permission is required. If a log channel is private, also give the bot View Channel there (it is not part of `18432`).
+No privileged intent is needed (default intents only). Slash command replies and roll announcements go through the interaction itself, and the bot only deletes its own `/item-loot` posts, so no other permission is required. If a log channel is private, also give the bot View Channel there (it is not part of `18432`).
 
 ```bash
 git clone https://github.com/DerpDerpFailer/Questlog-Item-Bot.git
@@ -65,9 +65,23 @@ The Docker tab icon comes from `icon/questlog-256.png` via jsDelivr. To change i
 | `/wishlist-export` | Staff only — view every member's wishlist on this server, with a button to export as CSV |
 | `/wishlist-clean` | Staff only — remove wishlists belonging to members who left the server (also runs automatically every week, optionally reported to `log_channel`) |
 
+## 🎲 Loot workflow
+
+1. **Post** — a member of the command role runs `/item-loot <item>`.
+2. **Sign up** — members of the button role pick Main PvP, Main PvE, Alternate Build or Greed. The choice is exclusive (picking another category moves you) and clicking your current category again removes you.
+3. **Roll** — a member of the command role clicks 🎲 Roll (refused while nobody has signed up):
+   - every sign-up gets a 1-100 roll, compared only with the other sign-ups of the same category; a tie for first place is re-rolled between the tied members only, shown as `65 → 12`
+   - a `🎲 Roll` field on the post lists the scores and each category's winner (with only one sign-up in a category, that member wins without a roll), in Main PvP > Main PvE > Alternate Build > Greed order
+   - the sign-up buttons are greyed out and sign-ups are closed
+   - an announcement message pings the winners (default), every participant, or nobody (`/item-setup roll_ping`)
+4. **Re-roll (optional)** — only when enabled with `/item-setup reroll:True`; otherwise the Roll button is greyed out after the first roll. Clicking Roll again asks for a reason (3-200 characters), re-rolls every category, and keeps the reason and the previous winners on the post; the announcement includes the reason.
+5. **Distribute** — a member of the command role clicks 📦 Distributed and picks the recipient (nobody is pre-selected: the roll only informs the staff's decision) and adds an optional note. The report posted in the log channel includes the roll results, then the loot post is deleted.
+
+Posts created before the Roll button existed get it on their next sign-up click. Enabling re-rolls does not re-enable the Roll button on posts that were already rolled while re-rolls were disabled.
+
 ## 💾 Data, backup & restore
 
-Per-server settings (roles, log channels, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`), or in the host folder set by `QUESTLOG_DATA_PATH`. Loot sign-ups and roll results are **not** stored there: they live in the Discord messages themselves.
+Per-server settings (roles, log channels, roll options, wishlists) live in `/app/data/<guild_id>.json`, on the named Docker volume `questlog-data` (under Portainer it is called `<stack name>_questlog-data`), or in the host folder set by `QUESTLOG_DATA_PATH`. Loot sign-ups and roll results are **not** stored there: they live in the Discord messages themselves.
 
 **Back up** — Portainer → Containers → `questlog-bot` → Console → `/bin/sh`, then save the output:
 
