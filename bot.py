@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import time
+import random
 import asyncio
 import logging
 import discord
@@ -20,13 +21,20 @@ from questlog.api import (
 from questlog.domain import (
     LOOT_CATEGORIES,
     LOOT_FIELD_NAME,
+    LOOT_ROLL_FIELD_NAME,
+    ROLL_REASON_MAX_CHARS,
     LootStateStore,
     compute_price_stats,
     format_change,
     format_current_price,
     format_loot_field,
     is_listed,
+    format_roll_field,
     parse_loot_field,
+    preselected_winner,
+    roll_loot,
+    roll_winner,
+    roll_ping_targets,
     toggle_loot_signup,
 )
 from questlog.stats import format_stat, get_stat_formats, load_stat_formats
@@ -254,11 +262,34 @@ def build_wishlist_clean_embed(removed: list[tuple[str, str]]) -> discord.Embed:
 
 
 LOOT_STATES = LootStateStore()
+# Fair dice: OS entropy, not the seedable default generator. Tests swap it for a scripted one.
+ROLL_RNG = random.SystemRandom()
+DEFAULT_ROLL_PING = "winners"
+
+
+def field_index(embed: discord.Embed, name: str) -> int | None:
+    return next((i for i, f in enumerate(embed.fields) if f.name == name), None)
+
+
+def current_roll(entry, embed: discord.Embed) -> str | None:
+    """The roll text: the remembered one wins over the click's (possibly stale) snapshot."""
+    if entry.roll is not None:
+        return entry.roll
+    index = field_index(embed, LOOT_ROLL_FIELD_NAME)
+    return embed.fields[index].value if index is not None else None
 
 
 class LootView(ErrorReportingView):
-    def __init__(self):
+    """Sign-up buttons on row 0, staff buttons on row 1. Once rolled, sign-ups are greyed out,
+    and so is Roll unless re-rolls are enabled. The instance registered at startup handles every
+    click, so it is never mutated: greyed-out variants are fresh instances sent with the edit."""
+
+    def __init__(self, rolled: bool = False, reroll_enabled: bool = False):
         super().__init__(timeout=None)
+        if rolled:
+            for button in (self.pvp_button, self.pve_button, self.alt_button, self.greed_button):
+                button.disabled = True
+            self.roll_button.disabled = not reroll_enabled
 
     async def _handle_click(self, interaction: discord.Interaction, category_key: str):
         guild_id = interaction.guild_id
@@ -271,8 +302,8 @@ class LootView(ErrorReportingView):
             return
 
         embed = interaction.message.embeds[0]
-        field_index = next((i for i, f in enumerate(embed.fields) if f.name == LOOT_FIELD_NAME), None)
-        if field_index is None:
+        index = field_index(embed, LOOT_FIELD_NAME)
+        if index is None:
             await interaction.response.send_message("❌ Internal error: loot field not found.", ephemeral=True)
             return
 
@@ -280,29 +311,66 @@ class LootView(ErrorReportingView):
         await interaction.response.defer()
         entry = LOOT_STATES.entry(interaction.message.id)
         async with entry.lock:
-            current = entry.state if entry.state is not None else parse_loot_field(embed.fields[field_index].value)
+            if current_roll(entry, embed) is not None:
+                await interaction.followup.send("🔒 Sign-ups are closed: this item was already rolled.", ephemeral=True)
+                return
+            current = entry.state if entry.state is not None else parse_loot_field(embed.fields[index].value)
             new_state = toggle_loot_signup(current, interaction.user.id, category_key)
-            embed.set_field_at(field_index, name=LOOT_FIELD_NAME, value=format_loot_field(new_state), inline=False)
+            embed.set_field_at(index, name=LOOT_FIELD_NAME, value=format_loot_field(new_state), inline=False)
             await interaction.edit_original_response(embed=embed, view=self)
             entry.state = new_state
 
-    @discord.ui.button(label="Main PvP", style=discord.ButtonStyle.primary, custom_id="loot_pvp")
+    @discord.ui.button(label="Main PvP", style=discord.ButtonStyle.primary, custom_id="loot_pvp", row=0)
     async def pvp_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "pvp")
 
-    @discord.ui.button(label="Main PvE", style=discord.ButtonStyle.success, custom_id="loot_pve")
+    @discord.ui.button(label="Main PvE", style=discord.ButtonStyle.success, custom_id="loot_pve", row=0)
     async def pve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "pve")
 
-    @discord.ui.button(label="Alternate Build", style=discord.ButtonStyle.secondary, custom_id="loot_alt")
+    @discord.ui.button(label="Alternate Build", style=discord.ButtonStyle.secondary, custom_id="loot_alt", row=0)
     async def alt_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "alt")
 
-    @discord.ui.button(label="Greed", style=discord.ButtonStyle.danger, custom_id="loot_greed")
+    @discord.ui.button(label="Greed", style=discord.ButtonStyle.danger, custom_id="loot_greed", row=0)
     async def greed_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_click(interaction, "greed")
 
-    @discord.ui.button(label="Distributed", style=discord.ButtonStyle.gray, emoji="📦", custom_id="loot_distributed")
+    @discord.ui.button(label="Roll", style=discord.ButtonStyle.gray, emoji="🎲", custom_id="loot_roll", row=1)
+    async def roll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id = interaction.guild_id
+        config = load_guild_config(guild_id) if guild_id else {}
+        command_role_id = config.get("command_role_id")
+        if not command_role_id or not has_role(interaction.user, command_role_id):
+            await interaction.response.send_message("❌ You don't have permission to roll this item.", ephemeral=True)
+            return
+
+        embed = interaction.message.embeds[0]
+        index = field_index(embed, LOOT_FIELD_NAME)
+        if index is None:
+            await interaction.response.send_message("❌ Internal error: loot field not found.", ephemeral=True)
+            return
+
+        entry = LOOT_STATES.entry(interaction.message.id)
+        if current_roll(entry, embed) is None:
+            signups = entry.state if entry.state is not None else parse_loot_field(embed.fields[index].value)
+            if not any(signups.values()):
+                await interaction.response.send_message("⚠️ Nobody signed up for this item yet.", ephemeral=True)
+                return
+            await interaction.response.defer()
+            await perform_roll(interaction, reason=None)
+            return
+
+        if not config.get("loot_reroll_enabled", False):
+            await interaction.response.send_message(
+                "🔒 This item was already rolled, and re-rolls are disabled on this server.\n"
+                "💡 An admin can enable them with `/item-setup reroll:True`.",
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(RerollReasonModal())
+
+    @discord.ui.button(label="Distributed", style=discord.ButtonStyle.gray, emoji="📦", custom_id="loot_distributed", row=1)
     async def distributed_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = interaction.guild_id
         config = load_guild_config(guild_id) if guild_id else {}
@@ -327,9 +395,91 @@ class LootView(ErrorReportingView):
         item_url = item_embed.url
         item_id = item_url.rsplit("/", 1)[-1] if item_url else None
         item_thumbnail = item_embed.thumbnail.url if item_embed.thumbnail else None
+        roll = current_roll(LOOT_STATES.entry(interaction.message.id), item_embed)
 
-        view = LootDistributeView(guild_id, interaction.message, item_name, item_url, item_id, item_thumbnail)
+        view = LootDistributeView(guild_id, interaction.message, item_name, item_url, item_id, item_thumbnail, roll)
         await interaction.response.send_message(f"Who received **{item_name}**?", view=view, ephemeral=True)
+
+
+async def perform_roll(interaction: discord.Interaction, reason: str | None) -> None:
+    """Roll (or re-roll, when `reason` is given) the loot message the interaction comes from.
+    The interaction must already be deferred; refusals found under the lock go out as ephemeral
+    followups. The announcement that pings people is a followup too: it goes through the
+    interaction webhook, so it needs no channel permission, and an embed edit never pings."""
+    guild_id = interaction.guild_id
+    config = load_guild_config(guild_id)
+    reroll_enabled = config.get("loot_reroll_enabled", False)
+    ping_mode = config.get("loot_roll_ping", DEFAULT_ROLL_PING)
+
+    embed = interaction.message.embeds[0]
+    item_name = embed.title or "Unknown item"
+    entry = LOOT_STATES.entry(interaction.message.id)
+    async with entry.lock:
+        previous = current_roll(entry, embed)
+        if reason is None and previous is not None:
+            await interaction.followup.send("⚠️ This item was already rolled.", ephemeral=True)
+            return
+        if reason is not None and not reroll_enabled:
+            await interaction.followup.send("🔒 Re-rolls are disabled on this server.", ephemeral=True)
+            return
+
+        loot_index = field_index(embed, LOOT_FIELD_NAME)
+        signups = entry.state if entry.state is not None else parse_loot_field(embed.fields[loot_index].value)
+        if not any(signups.values()):
+            await interaction.followup.send("⚠️ Nobody signed up for this item.", ephemeral=True)
+            return
+
+        result = roll_loot(signups, ROLL_RNG.randint)
+        value = format_roll_field(result, interaction.user.id, int(time.time()), reason, previous)
+        embed.set_field_at(loot_index, name=LOOT_FIELD_NAME, value=format_loot_field(signups), inline=False)
+        roll_index = field_index(embed, LOOT_ROLL_FIELD_NAME)
+        if roll_index is None:
+            embed.add_field(name=LOOT_ROLL_FIELD_NAME, value=value, inline=False)
+        else:
+            embed.set_field_at(roll_index, name=LOOT_ROLL_FIELD_NAME, value=value, inline=False)
+        await interaction.edit_original_response(embed=embed, view=LootView(rolled=True, reroll_enabled=reroll_enabled))
+        entry.state = signups
+        entry.roll = value
+
+    labels = {key: label for key, label, _ in LOOT_CATEGORIES}
+    winners = " · ".join(f"{labels[key]}: <@{roll_winner(entries)}>" for key, entries in result.items())
+    log.info(
+        f"[LOOT ROLL] {interaction.user.name} ({interaction.user.id}) → {item_name} "
+        f"{'re-roll' if reason else 'roll'}: {winners}" + (f" reason={reason!r}" if reason else "")
+    )
+
+    targets = roll_ping_targets(result, ping_mode)
+    if not targets:
+        return
+    title = f"🎲 Re-roll for **{item_name}**" if reason else f"🎲 Roll for **{item_name}**"
+    content = f"{title} — {winners}"
+    if reason:
+        content += f"\nReason: {discord.utils.escape_mentions(' '.join(reason.split()))}"
+    if ping_mode == "all":
+        content += "\nParticipants: " + " ".join(f"<@{user_id}>" for user_id in targets)
+    await interaction.followup.send(
+        content[:2000],
+        allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(i) for i in targets]),
+    )
+
+
+class RerollReasonModal(ErrorReportingModal):
+    reason = discord.ui.TextInput(
+        label="Why re-roll?",
+        style=discord.TextStyle.short,
+        required=True,
+        min_length=3,
+        max_length=ROLL_REASON_MAX_CHARS,
+        placeholder="e.g. a member signed up in the wrong category"
+    )
+
+    def __init__(self):
+        super().__init__(title="Re-roll this item")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # From a modal opened by a button, defer() acknowledges as an update of that button's message.
+        await interaction.response.defer()
+        await perform_roll(interaction, reason=self.reason.value)
 
 
 class LootDistributeView(ErrorReportingView):
@@ -340,7 +490,8 @@ class LootDistributeView(ErrorReportingView):
         item_name: str,
         item_url: str | None,
         item_id: str | None,
-        item_thumbnail: str | None
+        item_thumbnail: str | None,
+        roll: str | None = None
     ):
         super().__init__(timeout=300)
         self.guild_id = guild_id
@@ -349,13 +500,17 @@ class LootDistributeView(ErrorReportingView):
         self.item_url = item_url
         self.item_id = item_id
         self.item_thumbnail = item_thumbnail
+        self.roll = roll
+        winner = preselected_winner(roll)
+        if winner is not None:
+            self.select_recipient.default_values = [discord.Object(id=winner)]
 
     @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Who received this item?", min_values=1, max_values=1)
     async def select_recipient(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         recipient = select.values[0]
         modal = LootNoteModal(
             self.guild_id, self.source_message, self.item_name, self.item_url, self.item_id,
-            self.item_thumbnail, recipient
+            self.item_thumbnail, recipient, self.roll
         )
         await interaction.response.send_modal(modal)
 
@@ -377,9 +532,11 @@ class LootNoteModal(ErrorReportingModal):
         item_url: str | None,
         item_id: str | None,
         item_thumbnail: str | None,
-        recipient: discord.abc.User
+        recipient: discord.abc.User,
+        roll: str | None = None
     ):
         super().__init__(title=f"Distribute: {item_name}"[:45])
+        self.roll = roll
         self.guild_id = guild_id
         self.source_message = source_message
         self.item_name = item_name
@@ -410,6 +567,8 @@ class LootNoteModal(ErrorReportingModal):
         embed.add_field(name="Current Price", value=format_current_price(ah), inline=True)
         if self.note.value:
             embed.add_field(name="Note", value=self.note.value, inline=False)
+        if self.roll:
+            embed.add_field(name=LOOT_ROLL_FIELD_NAME, value=self.roll, inline=False)
         embed.add_field(name="Date", value=f"<t:{int(time.time())}:F>", inline=False)
         if self.item_thumbnail:
             embed.set_thumbnail(url=self.item_thumbnail)
@@ -810,39 +969,57 @@ async def item_loot_command(interaction: discord.Interaction, item_name: str):
 
 # ── Slash command /item-setup ─────────────────────────────────────────────────
 
-@tree.command(name="item-setup", description="Configure roles and/or the distribution log channel for /item-loot (admin only)")
+@tree.command(name="item-setup", description="Configure roles, the distribution log channel and roll options for /item-loot (admin only)")
 @app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.describe(
-    command_role="Role allowed to run /item-loot and mark items as distributed",
+    command_role="Role allowed to run /item-loot, roll items and mark them as distributed",
     button_role="Role allowed to click the loot sign-up buttons",
-    log_channel="Channel where loot distribution reports are posted"
+    log_channel="Channel where loot distribution reports are posted",
+    reroll="Allow the staff to re-roll an item that was already rolled (a reason is required)",
+    roll_ping="Who the roll announcement pings"
 )
+@app_commands.choices(roll_ping=[
+    app_commands.Choice(name="Nobody (no announcement)", value="none"),
+    app_commands.Choice(name="Winners only", value="winners"),
+    app_commands.Choice(name="All participants", value="all"),
+])
 async def item_setup_command(
     interaction: discord.Interaction,
     command_role: discord.Role = None,
     button_role: discord.Role = None,
-    log_channel: discord.TextChannel = None
+    log_channel: discord.TextChannel = None,
+    reroll: bool = None,
+    roll_ping: app_commands.Choice[str] = None
 ):
     guild_id = interaction.guild_id
     if not guild_id:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
-    if command_role is None and button_role is None and log_channel is None:
-        await interaction.response.send_message("⚠️ Provide at least `command_role`, `button_role`, or `log_channel`.", ephemeral=True)
+    if all(option is None for option in (command_role, button_role, log_channel, reroll, roll_ping)):
+        await interaction.response.send_message(
+            "⚠️ Provide at least one of `command_role`, `button_role`, `log_channel`, `reroll` or `roll_ping`.",
+            ephemeral=True
+        )
         return
 
     updates = {}
     parts = []
     if command_role is not None:
         updates["command_role_id"] = command_role.id
-        parts.append(f"Command role (`/item-loot`, Distributed button) → {command_role.mention}")
+        parts.append(f"Command role (`/item-loot`, Roll and Distributed buttons) → {command_role.mention}")
     if button_role is not None:
         updates["button_role_id"] = button_role.id
         parts.append(f"Sign-up buttons role → {button_role.mention}")
     if log_channel is not None:
         updates["loot_log_channel_id"] = log_channel.id
         parts.append(f"Distribution log channel → {log_channel.mention}")
+    if reroll is not None:
+        updates["loot_reroll_enabled"] = reroll
+        parts.append(f"Re-rolls → {'enabled' if reroll else 'disabled'}")
+    if roll_ping is not None:
+        updates["loot_roll_ping"] = roll_ping.value
+        parts.append(f"Roll announcement pings → {roll_ping.name}")
 
     save_guild_config(guild_id, **updates)
     log.info(f"[ITEM SETUP] {interaction.user.name} ({interaction.user.id}) → guild={guild_id} {updates}")

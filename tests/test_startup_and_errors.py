@@ -89,8 +89,9 @@ def test_every_view_reports_errors(cls):
     assert issubclass(cls, bot.ErrorReportingView)
 
 
-def test_the_note_modal_reports_errors():
-    assert issubclass(bot.LootNoteModal, bot.ErrorReportingModal)
+@pytest.mark.parametrize("cls", [bot.LootNoteModal, bot.RerollReasonModal])
+def test_every_modal_reports_errors(cls):
+    assert issubclass(cls, bot.ErrorReportingModal)
 
 
 def test_view_and_modal_errors_reach_the_user():
